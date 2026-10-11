@@ -15,6 +15,8 @@ import {
   FileUp,
   Grid2X2,
   Hand,
+  Eraser,
+  PenLine,
   ImagePlus,
   Layers3,
   LayoutTemplate,
@@ -43,6 +45,12 @@ import {
   SceneSchema,
   applyBoardNavigation,
   applyObjectEdit,
+  clearInk,
+  INK_COLORS,
+  INK_WIDTHS,
+  type InkColorId,
+  type InkTool,
+  type InkWidthId,
   invalidateDerivedResults,
   appendIllustration,
   getSceneViewport,
@@ -149,6 +157,8 @@ export default function App() {
   >("highlight");
   const [addOpen, setAddOpen] = useState(false);
   const [canvasTool,setCanvasTool]=useState<"select"|"pan">("select");
+  const [inkTool,setInkTool]=useState<InkTool|null>(null);
+  const [penStyle,setPenStyle]=useState<{color:InkColorId;width:InkWidthId}>({color:'red',width:'medium'});
   const [scenesOpen,setScenesOpen]=useState(false),[filesOpen,setFilesOpen]=useState(false),[activityOpen,setActivityOpen]=useState(false);
   const [historyCount, setHistoryCount] = useState(0);
   const cancelPlaybackRef=useRef<()=>void>(()=>{}),selfSequenceId=useRef<string|undefined>(undefined),historySequenceId=useRef<string|undefined>(undefined);
@@ -205,7 +215,7 @@ export default function App() {
     send({ type: "listen", enabled: false });
     sendInput({ type: "STOP" });
   }, [send, sendInput]);
-  const commit = useCallback((next: Project) => {
+  const commit = useCallback((next: Project, keepPlayback = false) => {
     const candidate = { ...next, scenes:next.scenes.map(invalidateDerivedResults), updatedAt: new Date().toISOString() };
     // Every persisted project must satisfy the shared schema; an invalid commit would be rejected by the server and dropped on reload.
     const parsed = ProjectSchema.safeParse(candidate);
@@ -213,7 +223,7 @@ export default function App() {
       setNotice(`Change not applied: ${parsed.error.issues[0]?.message ?? "it would make the project invalid"}.`);
       return;
     }
-    cancelPlaybackRef.current();selfSequenceId.current=undefined;
+    if (!keepPlayback) { cancelPlaybackRef.current();selfSequenceId.current=undefined; }
     history.current.push(projectRef.current);
     if (history.current.length > 60) history.current.shift();
     setHistoryCount(history.current.length);
@@ -242,10 +252,21 @@ export default function App() {
       }),
     [commit],
   );
+  // Ink commits share the validated/undoable path but must not cancel a running narrated sequence.
+  const updateSceneInk = useCallback(
+    (next: Scene) =>
+      commit({
+        ...projectRef.current,
+        scenes: projectRef.current.scenes.map((s) => (s.id === next.id ? next : s)),
+      }, true),
+    [commit],
+  );
   const pendingBoardEffect = useRef<Effect|null>(null);
   const playback=usePresentationPlayback({
-    readScene:()=>projectRef.current.scenes[Math.min(sceneIndexRef.current,projectRef.current.scenes.length-1)],
-    commitScene:(next,sequenceId)=>{
+    readScene:()=>{const s=projectRef.current.scenes[Math.min(sceneIndexRef.current,projectRef.current.scenes.length-1)];return s.ink?{...s,ink:undefined}:s;},
+    commitScene:(stepped,sequenceId)=>{
+      const localInk=projectRef.current.scenes.find(s=>s.id===stepped.id)?.ink;
+      const next=localInk?{...stepped,ink:localInk}:stepped;
       if(historySequenceId.current!==sequenceId){history.current.push(projectRef.current);if(history.current.length>60)history.current.shift();setHistoryCount(history.current.length);historySequenceId.current=sequenceId;}
       const nextProject={...projectRef.current,scenes:projectRef.current.scenes.map(s=>s.id===next.id?next:s),cues:projectRef.current.cues.filter(c=>c.sceneId!==next.id||hasTarget(next,c.targetId)),updatedAt:new Date().toISOString()};
       selfSequenceId.current=sequenceId;projectRef.current=nextProject;setProject(nextProject);
@@ -556,12 +577,15 @@ export default function App() {
     const timer = setTimeout(() => setNotice(""), 6500);
     return () => clearTimeout(timer);
   }, [notice]);
+  const inkToolRef = useRef<InkTool | null>(null);
+  inkToolRef.current = inkTool;
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         setDialog(null);
         setAddOpen(false);
         setScenesOpen(false);setFilesOpen(false);setActivityOpen(false);setSelectedId(null);
+        if (inkToolRef.current) { setInkTool(null); return; }
         if (isPresenting) sendMode({ type: "EDIT" });
       }
       if (
@@ -804,6 +828,8 @@ export default function App() {
       selectable={!isPresenting}
       onSelect={setSelectedId}
       onChange={updateScene}
+      inkTool={inkTool}
+      onInkChange={updateSceneInk}
       onApplied={(actionId) => send({ type: "applied", actionId })}
       onAnimationComplete={(actionId) => {
         send({ type: "animation.completed", actionId });
@@ -812,7 +838,7 @@ export default function App() {
     />
   );
   return (
-    <div className={`app canvas-first ${isPresenting ? "is-presenting" : ""}`}>
+    <div className={`app canvas-first ${isPresenting ? "is-presenting" : ""} ${inkTool ? "is-inking" : ""}`}>
       <div className="workspace">
         <header className="floating-header">
           <div className="floating-project">
@@ -980,7 +1006,16 @@ export default function App() {
                   <button data-testid="surface-slide" aria-pressed={scene.layout!=="whiteboard"} onClick={()=>switchSurface('slide')}>Slide</button>
                   <button data-testid="surface-whiteboard" aria-pressed={scene.layout==="whiteboard"} onClick={()=>switchSurface('whiteboard')}>Whiteboard</button>
                 </div>
-                {scene.layout==='whiteboard'&&<div className="canvas-tool-switch" role="group" aria-label="Canvas interaction tool"><button className="icon-button" data-testid="tool-select" aria-label="Select tool" title="Select and move objects" aria-pressed={canvasTool==='select'} onClick={()=>setCanvasTool('select')}><MousePointer2 size={14}/></button><button className="icon-button" data-testid="tool-hand" aria-label="Hand tool" title="Drag anywhere to pan the canvas" aria-pressed={canvasTool==='pan'} onClick={()=>{setCanvasTool('pan');setSelectedId(null);}}><Hand size={15}/></button></div>}
+                {scene.layout==='whiteboard'&&<div className="canvas-tool-switch" role="group" aria-label="Canvas interaction tool"><button className="icon-button" data-testid="tool-select" aria-label="Select tool" title="Select and move objects" aria-pressed={canvasTool==='select'} onClick={()=>setCanvasTool('select')}><MousePointer2 size={14}/></button><button className="icon-button" data-testid="tool-hand" aria-label="Hand tool" title="Drag anywhere to pan the canvas" aria-pressed={canvasTool==='pan'} onClick={()=>{setCanvasTool('pan');setSelectedId(null);setInkTool(null);}}><Hand size={15}/></button></div>}
+                <div className="ink-tools" role="group" aria-label="Pen annotations">
+                  <button className="icon-button" data-testid="ink-tool-pen" aria-label="Pen" title="Draw on the canvas" aria-pressed={inkTool?.mode==='pen'} onClick={()=>{if(inkTool?.mode==='pen'){setInkTool(null);return;}setInkTool({mode:'pen',...penStyle});setSelectedId(null);setCanvasTool('select');}}><PenLine size={14}/></button>
+                  {inkTool?.mode==='pen'&&<>
+                    {INK_COLORS.map(c=><button key={c.id} className="ink-swatch-button" data-testid={`ink-color-${c.id}`} aria-label={c.label} title={c.label} aria-pressed={inkTool.color===c.id} onClick={()=>{setPenStyle(p=>({...p,color:c.id}));setInkTool({...inkTool,color:c.id});}}><span className="ink-swatch" style={{background:c.value,opacity:c.opacity}}/></button>)}
+                    {(Object.keys(INK_WIDTHS) as InkWidthId[]).map((w,i)=><button key={w} className="ink-width-button" data-testid={`ink-width-${w}`} aria-label={`${w} stroke`} title={`${w} stroke`} aria-pressed={inkTool.width===w} onClick={()=>{setPenStyle(p=>({...p,width:w}));setInkTool({...inkTool,width:w});}}><span className="ink-dot" style={{width:4+i*3,height:4+i*3}}/></button>)}
+                  </>}
+                  <button className="icon-button" data-testid="ink-tool-eraser" aria-label="Eraser" title="Erase pen strokes" aria-pressed={inkTool?.mode==='eraser'} onClick={()=>{if(inkTool?.mode==='eraser'){setInkTool(null);return;}setInkTool({mode:'eraser'});setSelectedId(null);setCanvasTool('select');}}><Eraser size={14}/></button>
+                  <button className="icon-button" data-testid="ink-clear" aria-label="Clear ink" title="Clear all pen strokes" disabled={!scene.ink?.length} onClick={()=>updateSceneInk(clearInk(scene))}><Trash2 size={14}/></button>
+                </div>
                 <div className="stage-tools">
                   {!isPresenting && (
                     <button

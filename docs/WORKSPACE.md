@@ -155,3 +155,17 @@ Frontend typecheck passed after runtime integration. Root owns narrated teacher-
 Manual commits additionally run shared `invalidateDerivedResults` on each scene: changed source signatures hide stale derived results/equations, remove cached derivation metadata and invalidate lesson progress. Sequence-owned commits bypass this extra transform so server prefix validation sees exactly the shared step reducer output. Cancellation retains already-applied mutations (one Undo restores the pre-sequence scene); camera playback stops at the persisted target rather than continuing invisibly after cancellation.
 
 Matrix inspector data editing now accepts finite numbers and bounded symbolic cells (up to 300 characters each), using `SceneObjectSchema` before atomic Apply. Empty cells, ragged rows and non-finite numeric literals remain rejected; chart data stays strictly numeric. Symbolic expressions are stored as inert strings for the renderer, not evaluated by browser code. Commas delimit cells and newlines delimit rows.
+
+## Pen annotations
+
+The stage toolbar (`.stage-toolbar`) exposes ink controls in editing, rehearsing and presenting modes. `ink-tool-pen` toggles the pen (`aria-pressed`). While the pen is active the toolbar shows colour buttons `ink-color-red|yellow|green|blue` (yellow is a translucent highlighter), and width buttons `ink-width-thin|medium|thick`, each with `aria-pressed`. `ink-tool-eraser` toggles the eraser. `ink-clear` removes all ink on the current scene and is disabled when there is none. Escape exits the ink tool.
+
+Presentation: ink is available in Present mode. The intended behaviour is that switching modes keeps the selected tool; the test accepts a reset and re-enables pen. Ink commits take a separate path from narration. They do not cancel active playback, and playback does not clear ink.
+
+Undo: `undo-button` reverts the last ink commit. A pen stroke is one commit, and an eraser gesture is one commit however many strokes it removed. Clear is also undoable.
+
+Whiteboards: ink uses world coordinates and follows the camera. Ink and the Hand tool are exclusive: enabling a pen or eraser stops hand panning, and selecting Hand ends the ink tool. Panning by the `board-pan-*` buttons does not change saved ink points.
+
+iPad: the viewport uses `viewport-fit=cover`, so the canvas can use the full screen under the status bar. Selection callouts are suppressed while inking so they do not interrupt a stroke.
+
+Verification (12 October 2026): `tests/ink-annotations.spec.ts` passes (4 tests) and the full Playwright suite passes at 30; web/server/shared typecheck pass. Not yet exercised on a physical iPad or Mac Safari; see `docs/STATUS.md`.

@@ -24,6 +24,7 @@ Last updated: 12 October 2026. This is the single list of unfinished items. `doc
 ## Product gaps recorded as boundaries
 
 - Separate clean audience display; presentation currently keeps assistant controls on the same screen.
+- Pen annotations (12 October 2026) are verified only in Chromium through Playwright mouse input and synthetic pen pointer events. Real Apple Pencil, finger and Mac trackpad input in Safari, pressure/tilt, and multi-touch while inking are untested. Ink is not interpreted by Nemotron and cannot be a cue target; ink-to-shape is not planned.
 - Durable or cross-process voice-session resume; reconnect opens a fresh session and resends the scene.
 - Arbitrary narration does not continuously invent drawings. Explicit draw/illustrate commands append illustrations; a bounded AWS request-flow planner also handles its documented ordinary meeting clauses. General contextual references ("put a cache next to it") and unrestricted architecture narration remain unsupported.
 - Spoken image placement: Commons only, one visible chart required, no axis creation, numeric x positions, candidate choice, background removal or asset caching.

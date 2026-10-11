@@ -120,3 +120,23 @@ External camera updates ease over 420 ms by default (presentation camera duratio
 Isolated actual-planner visual review found and corrected an initially clipped product card (planner compacted the layout), disappearing blank-result row height, and symbolic cell width jitter. Empty cells now reserve a line box and indexed-symbol width so the result matrix brackets remain stable while entries appear. Per-cell `math.expressions` are available as tooltips and accessible labels; compact c11 notation remains legible. Simultaneous row/column highlights were visually verified against actual matrix DOM geometry. Cancellation during camera movement stops interpolation and snaps to the already-committed scene destination; it does not leave background playback running.
 
 Final isolated CUA review of the actual planner's 3×2 A / 2×3 B sequence confirmed the compacted product card ends near screen y=580 at width 1512, leaving room below in the approximately 680-pixel-high workspace. Both source matrices, the indexed current dot-product equation, and all nine result cells remain visible. The midstep preview confirmed blank and populated result brackets have stable height and simultaneous row/column highlights cover the correct cells. Temporary HTML/JSON fixtures and review tabs were removed without modifying a saved project. Update steps can now specify generic `entranceTargets` to reveal only the newly calculated cell and explanatory equation, leaving completed result cells visible. Equation text scales to its authored width before paint to avoid long-expression clipping.
+
+### Pen annotations (ink)
+
+Presenter ink is stored as `Scene.ink?: InkStroke[]` (`packages/shared`). A stroke is `{id, color, width, opacity?, points}` where `points` is a flat even-length `[x0, y0, x1, y1, …]` list. Limits: 2000 strokes per scene and 2000 points per stroke. When a commit reaches the stroke cap the oldest strokes drop; new drawing is never rejected. Colors are `INK_COLORS` (red `#d2432f`, yellow highlighter `#f2c94c` at 0.45 opacity, evergreen `#2f5d47`, blue `#2f5fa8`); widths are `INK_WIDTHS` (thin 3, medium 6, thick 12).
+
+Coordinates: points are in the logical 1200 × 675 scene space. On whiteboards they are world space, so strokes move with the camera and their on-screen width scales with zoom. Saved geometry does not depend on screen size.
+
+`SceneCanvas` accepts `inkTool: InkTool | null` (`{mode:'pen', color, width}` or `{mode:'eraser'}`) and `onInkChange(scene)`. `null` keeps ink visible but does not capture input. The parent owns the tool state and applies commits through normal project history.
+
+Rendering: an `svg[data-testid="ink-layer"]` sits above the objects inside `.viz-scene-stage`. Each committed stroke is `path[data-ink-id][data-ink-color]`, drawn with quadratic-midpoint smoothing and round caps. The in-progress stroke carries `data-ink-draft`. The layer carries `data-ink-active="pen"|"eraser"` only while a tool is active.
+
+Input rules: while a tool is active, every pointer type (mouse, pen, touch) draws, using the primary pointer only. Coalesced events are used when available, and points closer than 1.5 px are thinned. `pointercancel` discards the draft without committing. A scene change discards the draft. `setPointerCapture` is guarded so synthetic or lost pointers do not throw.
+
+Eraser: a stroke is removed when the eraser path passes within `width/2 + 10/zoom` of any of its segments (the stroke width is already in world units, so only the 10 px margin shrinks with zoom); the pointer's own path is sampled about every 8 screen px so a fast swipe cannot jump a stroke. The whole gesture is one commit, so one undo restores every stroke it removed.
+
+Ink is independent of attention effects, motion and presentation playback. Ink commits do not cancel narration playback, and playback does not clear ink. Planners never target ink: `semanticTargets` and the lesson planners do not resolve ink IDs.
+
+Limitations: no pressure or tilt, no ink-to-shape recognition.
+
+Verification (12 October 2026): `pnpm exec playwright test tests/ink-annotations.spec.ts` passes (4 tests: commit/persist/undo with saved points inside the drawn bounds, synthetic pen pointer events plus eraser single-step undo, presenting-mode availability with clear, and whiteboard world-space behaviour after a camera pan); the full suite passes at 30. Shared helper tests live in `apps/server/src/ink.test.ts`. The screenshot `docs/screenshots/ink.png` is captured by the first test. Real Apple Pencil, finger and trackpad input on iPad or Mac Safari is not yet verified; see `docs/STATUS.md`.

@@ -134,6 +134,50 @@ export const LessonContextSchema = z
 export const AttentionColorSchema = z
   .string()
   .regex(/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/);
+/** A freehand annotation stroke drawn with a pen, finger or mouse. Points are a flat [x0, y0, x1, y1, …] list in the scene's logical 1200 × 675 space (world space on whiteboards). */
+export const InkStrokeSchema = z
+  .object({
+    id,
+    color: AttentionColorSchema,
+    width: finite.min(1).max(40),
+    opacity: finite.min(0.05).max(1).optional(),
+    points: z
+      .array(finite.min(-1_000_000).max(1_000_000))
+      .min(2)
+      .max(4000),
+  })
+  .strict()
+  .refine((stroke) => stroke.points.length % 2 === 0, "Ink points must be x,y pairs");
+export type InkStroke = z.infer<typeof InkStrokeSchema>;
+export const INK_MAX_STROKES = 2000;
+/** Presenter ink palette. Yellow renders as a translucent highlighter; the rest are opaque pen colors. */
+export const INK_COLORS = [
+  { id: "red", label: "Red", value: "#d2432f", opacity: 1 },
+  { id: "yellow", label: "Yellow highlighter", value: "#f2c94c", opacity: 0.45 },
+  { id: "green", label: "Evergreen", value: "#2f5d47", opacity: 1 },
+  { id: "blue", label: "Blue", value: "#2f5fa8", opacity: 1 },
+] as const;
+export type InkColorId = (typeof INK_COLORS)[number]["id"];
+export const INK_WIDTHS = { thin: 3, medium: 6, thick: 12 } as const;
+export type InkWidthId = keyof typeof INK_WIDTHS;
+/** Active drawing tool. `null` means ink is visible but not being captured. */
+export type InkTool =
+  | { mode: "pen"; color: InkColorId; width: InkWidthId }
+  | { mode: "eraser" };
+export function addInkStroke(scene: Scene, stroke: InkStroke): Scene {
+  const ink = [...(scene.ink ?? []).filter((s) => s.id !== stroke.id), stroke];
+  // Bounded lifetime: the oldest strokes fall off once the limit is reached rather than rejecting new drawing.
+  return { ...scene, ink: ink.slice(Math.max(0, ink.length - INK_MAX_STROKES)) };
+}
+export function removeInkStroke(scene: Scene, strokeId: string): Scene {
+  if (!scene.ink?.some((s) => s.id === strokeId)) return scene;
+  const ink = scene.ink.filter((s) => s.id !== strokeId);
+  return ink.length ? { ...scene, ink } : { ...scene, ink: undefined };
+}
+export function clearInk(scene: Scene): Scene {
+  if (!scene.ink?.length) return scene;
+  return { ...scene, ink: undefined };
+}
 export const SceneSchema = z
   .object({
     id,
@@ -145,6 +189,7 @@ export const SceneSchema = z
     areas: z.array(BoardAreaSchema).max(200).optional(),
     activeAreaId: id.optional(),
     lesson: LessonContextSchema.optional(),
+    ink: z.array(InkStrokeSchema).max(INK_MAX_STROKES).optional(),
     objects: z.array(SceneObjectSchema).max(300),
     connections: z.array(SceneConnectionSchema).max(500),
   })

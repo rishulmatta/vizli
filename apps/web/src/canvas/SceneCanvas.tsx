@@ -22,6 +22,7 @@ import {
   type Scene,
   type SceneObject,
   type Effect,
+  type InkTool,
 } from "@vizli/shared";
 import "@xyflow/react/dist/style.css";
 import "./canvas.css";
@@ -32,6 +33,7 @@ import { playAttention } from "./motion/attention";
 import { useBoardCamera } from "./useBoardCamera";
 import PresentationLayer, { type PresentationFrame } from "./PresentationLayer";
 import BoardBackdrop, { isNearCamera } from "./BoardBackdrop";
+import InkLayer from "./InkLayer";
 
 type Props = {
   scene: Scene;
@@ -48,6 +50,10 @@ type Props = {
   onChange: (scene: Scene) => void;
   onApplied?: (actionId: string) => void;
   onAnimationComplete?: (actionId: string) => void;
+  /** Active presenter ink tool. `null` (default) renders ink without capturing pointer input. */
+  inkTool?: InkTool | null;
+  /** Commit path for ink mutations; falls back to `onChange` when omitted. */
+  onInkChange?: (scene: Scene) => void;
 };
 type Bounds = { x: number; y: number; width: number; height: number };
 const clamp = (n: number, low: number, high: number) =>
@@ -96,6 +102,8 @@ export default function SceneCanvas({
   onChange,
   onApplied,
   onAnimationComplete,
+  inkTool = null,
+  onInkChange,
 }: Props) {
   const container = useRef<HTMLDivElement>(null);
   const stage = useRef<HTMLDivElement>(null);
@@ -451,6 +459,8 @@ export default function SceneCanvas({
           if (!event.isPrimary || (event.button !== 0 && event.button !== 1)) return;
           panGesture.current = false;
           const target = event.target as HTMLElement;
+          // The ink layer owns primary-button gestures while a tool is active (capture runs before its handler).
+          if (event.button === 0 && target.closest(".viz-ink-layer")) return;
           if (target.closest(".viz-board-controls") || (!isBoard && target.closest("button"))) return;
           const overObject = Boolean(target.closest("[data-object-id]"));
           if (isBoard && (panTool || board.space || event.button === 1 || !overObject)) {
@@ -620,6 +630,17 @@ export default function SceneCanvas({
             </g>
           )}
         </svg>
+        <InkLayer
+          scene={scene}
+          sceneRef={sceneRef}
+          inkTool={inkTool}
+          isBoard={isBoard}
+          camera={camera}
+          scale={scale}
+          viewportHeight={viewportHeight}
+          stage={stage}
+          onCommit={onInkChange ?? onChange}
+        />
         {presentation && <PresentationLayer frame={presentation} stage={stage} scale={scale} scene={scene} camera={camera} viewportHeight={viewportHeight} onComplete={onPresentationComplete} onError={onPresentationError} />}
         {!isBoard && !fillViewport && <footer className="viz-scene-footer">
           <span>

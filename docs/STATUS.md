@@ -283,3 +283,24 @@ Verification (commands actually run):
 - The saved default project received lesson objects and extra whiteboards during these runs; they were removed again through the project API (backup kept locally in the session scratchpad).
 
 Not verified: the Nebius endpoint creation itself (no `nebius` CLI on this machine), WebSocket upgrades through a managed endpoint URL, authored lessons through a real microphone, and tier behaviour under concurrent presenters.
+
+## Pen annotations for iPad, Mac and mouse (12 October 2026)
+
+Why: presenters on an iPad with an Apple Pencil, or on a Mac with a trackpad, want to circle and underline parts of a scene while they talk, in a color they choose, without leaving Present mode.
+
+What changed:
+
+- **Shared model** (`packages/shared/src/index.ts`): `scene.ink?: InkStroke[]` (`id`, hex `color`, `width` 1–40, optional `opacity`, flat even-length `points` in logical/world space, 2,000 points per stroke, 2,000 strokes per scene with the oldest dropping first), `INK_COLORS` (red, yellow highlighter at 0.45 opacity, evergreen, blue), `INK_WIDTHS`, `InkTool`, and `addInkStroke`/`removeInkStroke`/`clearInk`. Ink is deliberately not a scene object: the object list is capped at 300 and is what the Nemotron planners target, so strokes never become cue targets.
+- **Canvas** (`apps/web/src/canvas/InkLayer.tsx`, `SceneCanvas.tsx`, `canvas.css`): an SVG layer above objects and attention effects renders smoothed strokes in every mode; with `inkTool` set it captures pen, touch and mouse pointers (coalesced events, 1.5 px thinning, guarded pointer capture, discard on cancel or scene change) and commits once per gesture through `onInkChange`. The eraser removes every stroke a gesture crosses in one commit. On whiteboards strokes live in world space and follow the camera.
+- **Workspace** (`apps/web/src/App.tsx`, `styles.css`, `index.html`): pen/eraser/clear controls with color and width pickers in the stage toolbar, available while presenting; Escape exits the tool; the hand tool and ink tools are mutually exclusive; ink commits are undoable but do not cancel narrated playback, and the presentation player ignores ink when checking whether the scene changed under it, re-attaching local ink when it commits a step. Viewport meta gained `viewport-fit=cover`; selection callouts are suppressed while inking.
+- Docs: `docs/CANVAS.md` and `docs/WORKSPACE.md` pen-annotation sections; screenshot `docs/screenshots/ink.png`.
+
+Verification (commands actually run):
+
+- `pnpm -r typecheck` pass (shared, server, web). `pnpm build` pass (existing bundle-size warning only).
+- `pnpm --filter @vizli/server test`: 126 existing tests pass plus 4 new in `apps/server/src/ink.test.ts` (schema limits, add/replace/remove/clear, stroke cap, persistence through `ProjectSchema`).
+- `pnpm exec playwright test tests/ink-annotations.spec.ts`: 4 passed (mouse strokes commit with saved points inside the drawn bounds, color choice, undo and reload persistence; synthetic `pointerType: 'pen'` events draw and the eraser removes a crossed stroke in one undoable step; pen stays available in Present mode and clear/undo round-trip; whiteboard strokes keep world coordinates after a camera pan and Escape exits the tool). `pnpm exec playwright test`: 30 passed.
+- Reviewed `docs/screenshots/ink.png`: yellow highlighter is translucent over the revenue metric, red stroke is opaque over the takeaway text, toolbar shows pressed pen, swatches and widths.
+- The workspace agent's CSS edit did not reach disk during delegation; the toolbar styles were written by the lead afterwards and the spec re-run.
+
+Not verified: a physical Apple Pencil, finger touch or Mac trackpad in Safari (Playwright drives Chromium with mouse and synthetic pen events only); pressure and tilt are intentionally unused; single-tap dots across browsers; behaviour of the ink layer under concurrent multi-touch.
