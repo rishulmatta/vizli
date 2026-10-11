@@ -48,7 +48,7 @@ Browser tests additionally cover drawing across whiteboard areas, returning and 
 
 Browser tests cover scene types and cues, edit/undo/present, malformed API persistence, mobile overflow, rehearsal save/reload, idea creation, image upload/export, missing cloud/microphone configuration, matrix/chart data validation, scene metadata, and cue removal/undo.
 
-Visual evidence: [whiteboard](screenshots/whiteboard.png), [studio](screenshots/studio.png), [matrix column pointer](screenshots/matrix-pointer.png), [mobile](screenshots/mobile.png).
+Visual evidence: [whiteboard](screenshots/whiteboard.png), [marketing hero](screenshots/hero-marketing.png), [matrix column pointer](screenshots/matrix-pointer.png), [mobile](screenshots/mobile.png).
 
 Image retrieval evidence: [apple on the chart x-axis](screenshots/apple-on-axis.png). New backend coverage checks final-only search, stale scene cancellation, query recognition, ambiguous/missing charts, source validation and anchor integrity. The browser test mocks the retrieval result at the WebSocket boundary, then verifies insertion, attribution, chart-following, chart deletion, manual detachment and undo. A separate live run verified the real Commons endpoint and image rendering.
 

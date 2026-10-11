@@ -1,6 +1,60 @@
-# Vizli
+<p align="center">
+  <img src="docs/brand/vizli-logo.png" alt="Vizli" width="380">
+</p>
 
-A visual presentation studio that follows your explanation. Prepare editable scenes, rehearse cues, and point, highlight, reveal, or animate objects as you speak.
+<p align="center">
+  <strong>Visual explanations that follow your voice.</strong><br>
+  Speak, and the canvas points, highlights, draws and edits. Editable slides and infinite whiteboards,<br>
+  powered by <strong>NVIDIA Nemotron</strong> on <strong>Nebius Token Factory</strong>.
+</p>
+
+<p align="center">
+  <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-173f35?style=flat-square"></a>
+  <a href="docs/HACKATHON.md"><img alt="Nebius x NVIDIA Global AI Hackathon" src="https://img.shields.io/badge/Nebius%20x%20NVIDIA-Best%20Apps%20%26%20Agents-4f7a52?style=flat-square"></a>
+  <img alt="Nemotron 3 Super on Token Factory" src="https://img.shields.io/badge/model-Nemotron%203%20Super-8fa17a?style=flat-square">
+  <img alt="Node 24+" src="https://img.shields.io/badge/node-%E2%89%A524-244d3c?style=flat-square">
+  <img alt="pnpm 12" src="https://img.shields.io/badge/pnpm-12-244d3c?style=flat-square">
+  <img alt="Tests" src="https://img.shields.io/badge/tests-93%20unit%20%C2%B7%2023%20browser-4f7a52?style=flat-square">
+</p>
+
+<p align="center">
+  <a href="#run-locally">Run locally</a> ·
+  <a href="#how-vizli-uses-nvidia-nemotron-and-nebius-token-factory">How it uses Nemotron</a> ·
+  <a href="#narrate-a-matrix-multiplication-lesson">Narrated lesson</a> ·
+  <a href="docs/STATUS.md">Status</a> ·
+  <a href="docs/STATUS-PENDING.md">Pending work</a> ·
+  <a href="docs/HACKATHON.md">Hackathon</a>
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/hero-marketing.png" alt="Vizli marketing scene after the spoken cue “Point to revenue”" width="920">
+</p>
+
+## What it does
+
+Vizli is a presentation studio for people who explain things out loud: teachers, presenters, e-learning authors and anyone thinking at a whiteboard. Every scene is editable JSON with stable object and part IDs, so a spoken sentence can land on exactly the right bar, matrix row or diagram node.
+
+| Say it | Vizli does it |
+| --- | --- |
+| “Point to revenue” · “Highlight the second row of matrix A” | A red pointer or highlight lands on that exact object or part. |
+| “Reveal the takeaway” · “Animate matrix A with draw effect” | Prepared content appears on cue; motion presets play and can be cancelled. |
+| “Make matrix A 3 by 2” · “Change Revenue to $4.5M” | The object is edited in place, atomically, with one undo step. |
+| “Draw a software architecture” · “Let's go right” · “Go to Start” | Nemotron plans editable objects onto the whiteboard; the camera travels and returns. |
+| “An apple on the x axis” | A sourced Wikimedia image is placed on the chart axis with attribution. |
+| “A is three by two and B is two by three…” | A narrated matrix-multiplication lesson draws itself step by step. |
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/hero-matrix.png" alt="Matrix lesson with a highlighted row"></td>
+    <td width="50%"><img src="docs/screenshots/whiteboard.png" alt="Expanding whiteboard with an architecture diagram"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Addressable matrices, equations and plugin parts</sub></td>
+    <td align="center"><sub>Infinite whiteboard with named areas and a persistent camera</sub></td>
+  </tr>
+</table>
+
+Listening and animation are separate lifecycles: the microphone keeps working while a lesson plays, ambiguous cues skip instead of guessing, and every action is fenced by the scene revision it was made for. Without credentials the app runs in a clearly labelled demo mode that performs no model inference.
 
 ## How Vizli uses NVIDIA Nemotron and Nebius Token Factory
 
@@ -92,14 +146,6 @@ Start with [docs/STATUS.md](docs/STATUS.md) for verified progress and outstandin
 
 This is initially a local single-user application. Supabase cloud rows have owner-scoped access policies; the local API/session server is still single-user and must gain authentication before public deployment. No deployment, account provisioning, or hackathon submission has been performed.
 
-## License
-
-Vizli is released under the [Apache License 2.0](LICENSE); see [NOTICE](NOTICE) for attribution and third-party notices. Vendored NVIDIA Riva protocol files keep their MIT/Apache-2.0 licenses.
-
-JSON project import/export is the editable interchange format. Arbitrary PowerPoint/PDF reconstruction, symbolic mathematics, and automatic editable decomposition of raster images are separate work.
-
-Browser regression tests (`pnpm test:e2e`) launch isolated demo servers on ports 5174/3002 with temporary storage and paid providers disabled; they do not reuse the live development app.
-
 ## Domain libraries and motion
 
 Open **Add object** for **Mathematics**, **AWS architecture**, or **UML diagrams**. Insert matrices/equations, representative AWS service shapes, or editable UML classes. Select an object to choose **Target part** and highlight an internal member, or select a **Motion preset** and preview it. Try “Animate matrix A with draw effect” or “Highlight methods of Customer”. Draw progressively reveals content; it is not handwritten font tracing. AWS artwork is an original representative palette, not the official full icon catalogue.
@@ -120,3 +166,11 @@ On a whiteboard, say or type:
 Matrices draw progressively; the pointer traces an outline, highlights fade in, and the view pans smoothly. The lesson fills nine output cells one at a time while showing each dot product. Dimensions alone use symbolic entries. Edit the source values to numbers for numeric multiplication. Pause/resume/skip/cancel controls appear while a sequence plays. Editing sources cancels playback and hides stale derived results.
 
 The generic sequence schema and player are reusable across domain plugins; the first narrated lesson planner is matrix multiplication. See [docs/NARRATED_LESSONS.md](docs/NARRATED_LESSONS.md) for architecture, validation, evidence and limits.
+
+## License
+
+Vizli is released under the [Apache License 2.0](LICENSE); see [NOTICE](NOTICE) for attribution and third-party notices. Vendored NVIDIA Riva protocol files keep their MIT/Apache-2.0 licenses.
+
+JSON project import/export is the editable interchange format. Arbitrary PowerPoint/PDF reconstruction, symbolic mathematics, and automatic editable decomposition of raster images are separate work.
+
+Browser regression tests (`pnpm test:e2e`) launch isolated demo servers on ports 5174/3002 with temporary storage and paid providers disabled; they do not reuse the live development app.
