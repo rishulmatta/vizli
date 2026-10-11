@@ -21,7 +21,16 @@ export const pluginFields = {
     .optional(),
   aws: z
     .object({
-      service: z.enum(["lambda", "s3", "apigateway", "dynamodb", "ec2"]),
+      service: z.enum([
+        "lambda",
+        "s3",
+        "apigateway",
+        "dynamodb",
+        "ec2",
+        "route53",
+        "alb",
+        "rds",
+      ]),
       region: z.string().min(1).max(80).optional(),
     })
     .strict()

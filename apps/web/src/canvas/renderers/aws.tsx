@@ -1,61 +1,100 @@
 import type { SceneObject } from "@vizli/shared";
-const labels = {
-  lambda: "Lambda",
-  s3: "S3",
-  apigateway: "API Gateway",
-  dynamodb: "DynamoDB",
-  ec2: "EC2",
-};
-const shapes = {
-  lambda: <path d="M18 12h12l16 40H34L24 26 12 52H2l17-35z" />,
-  s3: (
-    <>
-      <path d="M7 14h42l-5 38H12z" />
-      <ellipse cx="28" cy="14" rx="21" ry="6" />
-    </>
-  ),
-  apigateway: (
-    <>
-      <path d="M5 15h46v34H5z" />
-      <path d="M16 25h24M16 37h24" stroke="white" strokeWidth="3" />
-    </>
-  ),
-  dynamodb: (
-    <>
-      <ellipse cx="28" cy="14" rx="21" ry="8" />
-      <path
-        d="M7 14v32c0 11 42 11 42 0V14M7 28c0 11 42 11 42 0"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="4"
-      />
-    </>
-  ),
-  ec2: (
-    <>
-      <path d="M12 12h32v32H12z" />
-      <path
-        d="M3 18h9M3 36h9M44 18h9M44 36h9M18 3v9M36 3v9M18 44v9M36 44v9"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="3"
-      />
-    </>
-  ),
-};
+import { useEffect, useState } from "react";
+
+const services = {
+  lambda: {
+    label: "AWS Lambda",
+    icon: "/aws-icons/lambda.svg",
+  },
+  s3: {
+    label: "Amazon S3",
+    icon: "/aws-icons/s3.svg",
+  },
+  apigateway: {
+    label: "Amazon API Gateway",
+    icon: "/aws-icons/api-gateway.svg",
+  },
+  dynamodb: {
+    label: "Amazon DynamoDB",
+    icon: "/aws-icons/dynamodb.svg",
+  },
+  ec2: {
+    label: "Amazon EC2 instance",
+    icon: "/aws-icons/ec2-instance.svg",
+  },
+  route53: {
+    label: "Amazon Route 53",
+    icon: "/aws-icons/route-53.svg",
+  },
+  alb: {
+    label: "Application Load Balancer",
+    icon: "/aws-icons/application-load-balancer.svg",
+  },
+  rds: {
+    label: "Amazon RDS",
+    icon: "/aws-icons/rds.svg",
+  },
+} as const;
+
+function AwsIcon({ src, label }: { src: string; label: string }) {
+  const [failed, setFailed] = useState(false);
+  useEffect(() => setFailed(false), [src]);
+  if (failed)
+    return (
+      <span
+        className="viz-aws-icon-fallback"
+        role="img"
+        aria-label={`${label} icon unavailable`}
+        data-aws-icon-error="true"
+      >
+        Icon unavailable
+      </span>
+    );
+  return (
+    <img
+      src={src}
+      alt=""
+      draggable={false}
+      data-aws-icon={src}
+      onError={() => setFailed(true)}
+    />
+  );
+}
+
 export default function AwsRenderer({ object }: { object: SceneObject }) {
   const service = object.aws?.service ?? "ec2";
+  const isAutoScalingGroup =
+    service === "ec2" &&
+    /auto[- ]scaling(?:\s+group)?/iu.test(`${object.label} ${object.text ?? ""}`);
+  const asset = isAutoScalingGroup
+    ? {
+        label: "Amazon EC2 Auto Scaling",
+        icon: "/aws-icons/ec2-auto-scaling.svg",
+      }
+    : services[service] ?? services.ec2;
   return (
-    <div className="viz-aws-card" data-domain="cloud.aws">
+    <div
+      className="viz-aws-card"
+      data-domain="cloud.aws"
+      data-aws-service={service}
+      data-aws-capacity-range={
+        /\b5\s*[–-]\s*12\b/u.test(`${object.label} ${object.text ?? ""}`)
+          ? "5–12"
+          : undefined
+      }
+      data-aws-replica-summary={
+        /read replicas?/iu.test(`${object.label} ${object.text ?? ""}`)
+          ? "multiple"
+          : undefined
+      }
+    >
       <div
         className="viz-aws-service"
         data-target-id={`${object.id}:part:service`}
         data-motion-item
       >
-        <svg viewBox="0 0 56 60" aria-hidden="true" fill="currentColor">
-          {shapes[service]}
-        </svg>
-        <span>AWS / {labels[service]}</span>
+        <AwsIcon src={asset.icon} label={asset.label} />
+        <span>{asset.label}</span>
       </div>
       <strong>{object.label}</strong>
       <span className="viz-aws-description">

@@ -143,7 +143,7 @@ export function NodeRenderer({ object }: { object: SceneObject }) {
 export function TextRenderer({ object }: { object: SceneObject }) {
   return (
     <div
-      className={`viz-text ${object.height < 75 ? "is-compact" : ""} ${/^[×+=→]$/.test(object.text ?? "") ? "is-symbol" : ""}`}
+      className={`viz-text ${object.height < 100 ? "is-compact" : ""} ${/^[×+=→]$/.test(object.text ?? "") ? "is-symbol" : ""}`}
       style={{ color: object.color }}
     >
       {/^[×+=→]$/.test(object.text ?? "") || object.height < 75 ? (

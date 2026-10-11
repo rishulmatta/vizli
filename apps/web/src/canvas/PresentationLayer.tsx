@@ -87,16 +87,26 @@ export default function PresentationLayer({
         step.type === "update" && step.entranceTargets
           ? step.entranceTargets
           : step.objects.map((object) => object.id);
-      const targets = ids.flatMap((id) => targetElements(stage.current, id));
-      if (ids.some((id) => !targetElements(stage.current, id).length)) {
-        raf = requestAnimationFrame(() =>
-          fail("A lesson object is outside the visible canvas."),
-        );
-        return () => cancelAnimationFrame(raf);
-      }
-      const playback = playMotion(targets, "draw", complete, step.durationMs);
-      motions.current = [playback];
-      if (frame.paused) playback.pause();
+      let mountFrames = 0;
+      const startWhenMounted = () => {
+        if (cancelled) return;
+        const targets = ids.flatMap((id) => targetElements(stage.current, id));
+        if (ids.some((id) => !targetElements(stage.current, id).length)) {
+          // React Flow commits node DOM after its controlled `nodes` prop updates.
+          // The board renderer mounts directly, but both surfaces share this effect.
+          // Give either renderer a bounded window to expose the inserted target.
+          if (++mountFrames < 30) {
+            raf = requestAnimationFrame(startWhenMounted);
+            return;
+          }
+          fail("A lesson object is outside the visible canvas.");
+          return;
+        }
+        const playback = playMotion(targets, "draw", complete, step.durationMs);
+        motions.current = [playback];
+        if (latest.current.frame.paused) playback.pause();
+      };
+      startWhenMounted();
     } else if (step.type === "attention") {
       raf = requestAnimationFrame(() => {
         if (cancelled) return;

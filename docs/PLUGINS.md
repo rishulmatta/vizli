@@ -1,6 +1,6 @@
 # Domain plugins and motion
 
-Status: implemented locally, 10 October 2026. See STATUS.md for verification evidence and remaining scope.
+Status: plugin system implemented locally on 10 October 2026; official AWS assets and bounded request-flow planner added 12 October 2026. See STATUS.md for current verification evidence and remaining scope.
 
 ## Design
 
@@ -29,7 +29,7 @@ Motion is separate from structure: changing pulse to draw does not change a matr
 ## Initial scope
 
 - Maths: numeric or symbolic matrices, structured row/column/cell targeting, KaTeX equations and a bounded narrated multiplication planner. This is not a general computer algebra system or a complete interactive maths editor.
-- AWS: a small representative service palette, drawn as labelled service shapes. Do not describe these as official AWS icon artwork unless official assets are added with provenance.
+- AWS: a representative service palette rendered with locally bundled official AWS architecture SVGs. Asset files are unmodified exports from the official Icon Package release `07312026`; source package URL, release date, and landing page are recorded in `apps/web/public/aws-icons/README.md`. The palette is representative and does not imply a deployed or validated AWS environment.
 - UML: an editable class with title, attributes and methods, with addressable internal members. This is an extensible first diagram type, not draw.io feature parity.
 - Draw motion: progressive visual construction/reveal. Text glyphs are not converted into handwriting strokes.
 - Flow motion: visual emphasis on parts; it does not simulate a validated cloud request or program execution.
@@ -67,6 +67,7 @@ Cue lifecycle continues to be candidate → resolving → ready → dispatched �
 - `packages/shared/src/plugin-contracts.ts`: strict persisted plugin fields and compatibility validation.
 - `packages/shared/src/plugins.ts`: built-in metadata, target enumerators, insertion factories and bounded motion presets.
 - `apps/web/src/canvas/renderers/registry.tsx`: renderer dispatch for all legacy and plugin objects; domain implementations live beside it.
+- `apps/web/src/canvas/renderers/aws.tsx` and `apps/web/public/aws-icons/README.md`: AWS service renderer, official local SVG assets, release provenance and source links.
 - `apps/web/src/canvas/semanticTargets.ts`: exact targets and generic group membership lookup. Matrix cells declare column membership through `data-target-groups`; the canvas does not parse matrix indices.
 - `apps/web/src/canvas/motion/adapters.ts`: DOM playback. Renderers mark `data-motion-item`, `data-motion-group` and optional SVG `data-motion-stroke`; motion has no matrix/UML payload dependencies.
 - `apps/web/src/editor/PluginLibrary.tsx` and `PluginInspector.tsx`: insertion, domain properties, motion preference and part selection.
@@ -90,4 +91,4 @@ Equations expose a whole-object target, not token-by-token LaTeX semantic select
 
 ## Narrated domain planners
 
-Plugins can now emit bounded presentation sequences through a shared reducer and XState player. The matrix multiplication adapter is the first implemented planner; the same commands were verified with a non-maths AWS sequence. Domain arithmetic stays in server domain modules; rendering, attention, camera and playback remain generic. See [NARRATED_LESSONS.md](NARRATED_LESSONS.md).
+Plugins can emit bounded presentation sequences through a shared reducer and XState player. The matrix multiplication adapter and a constrained AWS request-flow planner are implemented. The AWS planner recognizes a defined vocabulary and incrementally adds client/API Gateway, Route 53 policy annotation, regional Application Load Balancer, an EC2 Auto Scaling group labeled with its 5–12 capacity range and API role, then a PostgreSQL writer and an unspecified “multiple” read-replica group. Route 53 is a DNS policy relation, not an inline request proxy; the diagram describes configured routing signals as best effort. This is not general architecture inference or a deployment validator. Domain semantics stay in server modules; rendering, attention, camera and playback remain generic. See [NARRATED_LESSONS.md](NARRATED_LESSONS.md).

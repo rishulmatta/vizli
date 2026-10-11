@@ -19,6 +19,8 @@ import {
 import { ProjectStore } from "./store.js";
 import { VisualSession } from "./session.js";
 import { createNebiusResolver } from "./resolver.js";
+import { createIntentRouter } from "./intent.js";
+import { createLessonAuthor } from "./lessons.js";
 import { generateScene, GenerateRequestSchema } from "./generate.js";
 import { NvidiaSpeech } from "./speech.js";
 export const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
@@ -78,6 +80,10 @@ export async function buildApp(
     speechConfigured: !!providerConfig.nvidiaKey,
     modelConfigured: configured,
     model: configured ? providerConfig.liveModel : null,
+    provider: configured ? "nebius-token-factory" : null,
+    /** Nemotron tiers in use; model IDs only, never credentials. */
+    models: configured && providerConfig.tiers ? providerConfig.tiers : null,
+    routing: configured ? "nemotron-first" : "local-rules",
   }));
   app.post("/api/scenes/generate", async (request, reply) => {
     const parsed = GenerateRequestSchema.safeParse(request.body);
@@ -144,19 +150,25 @@ export async function buildApp(
         socket.send(JSON.stringify(message));
       }
     };
-    const resolver = configured
+    const nebius = configured
+      ? { usage, key: providerConfig.nebiusKey!, baseUrl: providerConfig.baseUrl }
+      : undefined;
+    const resolver = nebius
       ? createNebiusResolver({
-          usage,
-          key: providerConfig.nebiusKey!,
+          ...nebius,
           model: providerConfig.liveModel!,
-          baseUrl: providerConfig.baseUrl,
+          router: createIntentRouter({ ...nebius, model: providerConfig.fastModel! }),
         })
+      : undefined;
+    const lessonAuthor = nebius
+      ? createLessonAuthor({ ...nebius, model: providerConfig.reasoningModel! })
       : undefined;
     const session = new VisualSession(
       send,
       resolver,
       undefined,
       (request, signal) => generateScene(request, env, usage, signal),
+      lessonAuthor,
     );
     let speech: SpeechConnection | undefined;
     const voiceBudget = new VoiceBudget(usage);
@@ -227,6 +239,8 @@ export async function buildApp(
           session.applied(message.actionId);
         else if (message.type === "animation.completed")
           session.complete(message.actionId);
+        else if (message.type === "animation.cancelled")
+          session.cancel(message.actionId);
         else if (message.type === "listen") {
           stopVoice();
           if (!message.enabled) {

@@ -114,3 +114,16 @@ describe("local hackathon configuration preflight", () => {
     );
   });
 });
+
+describe("Nemotron tier configuration", () => {
+  it("defaults the fast and reasoning tiers to the core and planning models and checks every tier", () => {
+    const config = readProviderConfig(valid);
+    expect(config.tiers).toEqual({ fast: valid.NEBIUS_MODEL, core: valid.NEBIUS_MODEL, reasoning: valid.NEBIUS_MODEL });
+    const tiered = readProviderConfig({ ...valid, NEBIUS_FAST_MODEL: "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B", NEBIUS_REASONING_MODEL: "nvidia/Nemotron-3-Ultra-550b-a55b", NEBIUS_PLANNING_MODEL: " " });
+    expect(tiered.tiers).toEqual({ fast: "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B", core: valid.NEBIUS_MODEL, reasoning: "nvidia/Nemotron-3-Ultra-550b-a55b" });
+    expect(checkHackathonConfig({ ...valid, NEBIUS_FAST_MODEL: "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B", NEBIUS_REASONING_MODEL: "nvidia/Nemotron-3-Ultra-550b-a55b" }).every((check) => check.status === "pass")).toBe(true);
+    const checks = checkHackathonConfig({ ...valid, NEBIUS_FAST_MODEL: "openai/gpt-4o-mini", NEBIUS_REASONING_MODEL: "deepseek-ai/DeepSeek-R1" });
+    expect(checks.filter((check) => check.status === "mismatch").map((check) => check.name)).toEqual(["Effective fast tier (NEBIUS_FAST_MODEL)", "Effective reasoning tier (NEBIUS_REASONING_MODEL)"]);
+    expect(readProviderConfig({}).tiers).toBeUndefined();
+  });
+});

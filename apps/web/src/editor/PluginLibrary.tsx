@@ -13,6 +13,9 @@ const services: { id: AWSService; label: string }[] = [
   { id: "apigateway", label: "API Gateway" },
   { id: "dynamodb", label: "DynamoDB table" },
   { id: "ec2", label: "EC2 instance" },
+  { id: "route53", label: "Route 53 routing policy" },
+  { id: "alb", label: "Application Load Balancer" },
+  { id: "rds", label: "RDS database" },
 ];
 export default function PluginLibrary({
   onAdd,

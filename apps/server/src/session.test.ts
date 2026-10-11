@@ -273,3 +273,59 @@ it("waits for final speech after an invalid speculative proposal, but surfaces p
     expect(messages).toContainEqual({ type: "error", message: "Invalid final visual response" });
   } finally { session.close(); }
 });
+
+describe("Nemotron-authored lessons", () => {
+  const board = project.scenes.find((scene) => scene.layout === "whiteboard") ?? project.scenes[0]!;
+  const authorProposal = {
+    type: "author_lesson" as const,
+    prompt: "Explain how DNS resolution works",
+    reason: "Teaching request",
+    served: { provider: "nebius-token-factory" as const, tier: "reasoning" as const, router: { model: "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B", tier: "fast" as const, intent: "lesson", latencyMs: 400 } },
+  };
+  const sequence = {
+    id: "lesson-test",
+    domain: "nemotron.lesson",
+    steps: [
+      { id: "s0", type: "insert" as const, objects: [{ id: "lesson-test-a", kind: "node" as const, label: "Browser", x: board.objects.length ? 4000 : 40, y: 4000, width: 300, height: 120 }], entrance: "draw" as const, durationMs: 900 },
+      { id: "s1", type: "attention" as const, targets: ["lesson-test-a"], style: "point" as const, durationMs: 1500 },
+    ],
+  };
+  it("plans through the reasoning tier and dispatches a validated sequence that records both models", async () => {
+    const messages: ServerMessage[] = [];
+    const author = vi.fn().mockResolvedValue({ type: "sequence", sequence, reason: "Drawing DNS", served: { provider: "nebius-token-factory", model: "nvidia/Nemotron-3-Ultra-550b-a55b", tier: "reasoning", planner: "nemotron.lesson", latencyMs: 3200 } });
+    const s = new VisualSession((m) => messages.push(m), async () => authorProposal, undefined, undefined, author);
+    s.setScene(board, 1, []);
+    await s.cue("Explain how DNS resolution works");
+    expect(messages.some((m) => m.type === "state" && m.state === "planning")).toBe(true);
+    const [action] = actions(messages);
+    expect(action?.action.type).toBe("sequence");
+    expect(action?.action.sequence?.id).toBe("lesson-test");
+    expect(action?.action.served).toMatchObject({ provider: "nebius-token-factory", model: "nvidia/Nemotron-3-Ultra-550b-a55b", tier: "reasoning", router: { intent: "lesson" } });
+    expect(author.mock.calls[0]![0]).toMatchObject({ prompt: "Explain how DNS resolution works", scene: board });
+    s.close();
+  });
+  it("never authors from partial speech and explains when the reasoning tier is not configured", async () => {
+    const messages: ServerMessage[] = [];
+    const resolver = vi.fn().mockResolvedValue(authorProposal);
+    const s = new VisualSession((m) => messages.push(m), resolver);
+    s.setScene(board, 1, []);
+    await s.cue("Explain how DNS resolution works", false, true);
+    expect(actions(messages)).toHaveLength(0);
+    expect(messages.filter((m) => m.type === "skipped")).toHaveLength(0);
+    expect(resolver.mock.calls[0]![0].final).toBe(false);
+    await s.cue("Explain how DNS resolution works");
+    const skipped = messages.find((m) => m.type === "skipped");
+    expect(skipped && skipped.type === "skipped" && skipped.reason).toContain("reasoning tier");
+    expect(actions(messages)).toHaveLength(0);
+    s.close();
+  });
+  it("surfaces authoring failures as bounded errors without fabricating a sequence", async () => {
+    const messages: ServerMessage[] = [];
+    const s = new VisualSession((m) => messages.push(m), async () => authorProposal, undefined, undefined, async () => { throw new ModelResponseError("The lesson plan was cut short. Ask for a narrower topic."); });
+    s.setScene(board, 1, []);
+    await s.cue("Explain everything about networking");
+    expect(actions(messages)).toHaveLength(0);
+    expect(messages.find((m) => m.type === "error")).toMatchObject({ message: "The lesson plan was cut short. Ask for a narrower topic." });
+    s.close();
+  });
+});

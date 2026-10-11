@@ -268,7 +268,9 @@ export const PresentationStepSchema = z.discriminatedUnion("type", [
     .object({
       id,
       type: z.literal("insert"),
-      objects: z.array(SceneObjectSchema).min(1).max(30),
+      objects: z.array(SceneObjectSchema).max(30),
+      /** Connections are added atomically with their endpoint objects. Existing scene edges are preserved. */
+      connections: z.array(SceneConnectionSchema).max(50).optional(),
       lesson: LessonContextSchema.optional(),
       entrance: z.literal("draw").optional(),
       durationMs: z.number().int().min(0).max(5000).optional(),
@@ -314,7 +316,17 @@ export const PresentationStepSchema = z.discriminatedUnion("type", [
   z
     .object({ id, type: z.literal("context"), lesson: LessonContextSchema })
     .strict(),
-]);
+]).superRefine((step, ctx) => {
+  if (
+    step.type === "insert" &&
+    step.objects.length === 0 &&
+    (step.connections?.length ?? 0) === 0
+  )
+    ctx.addIssue({
+      code: "custom",
+      message: "Insert a visual object or add a connection",
+    });
+});
 export const PresentationSequenceSchema = z
   .object({
     id,
@@ -338,6 +350,31 @@ export type PresentationStep = z.infer<typeof PresentationStepSchema>;
 export type PresentationSequence = z.infer<typeof PresentationSequenceSchema>;
 export type LessonContext = z.infer<typeof LessonContextSchema>;
 export * from "./presentation.js";
+/** Which model produced an action. Shown to the presenter; never contains credentials. */
+export const ModelTierSchema = z.enum(["fast", "core", "reasoning"]);
+export const ServedBySchema = z
+  .object({
+    provider: z.enum(["nebius-token-factory", "local-rules"]),
+    /** Model that produced the final action, when a model did. */
+    model: z.string().max(200).optional(),
+    tier: ModelTierSchema.optional(),
+    /** Nemotron intent decision that preceded grounding, when the router ran. */
+    router: z
+      .object({
+        model: z.string().max(200),
+        tier: ModelTierSchema,
+        intent: z.string().max(40),
+        latencyMs: z.number().int().nonnegative(),
+      })
+      .strict()
+      .optional(),
+    /** Deterministic grounding tool that produced the action after routing. */
+    planner: z.string().max(100).optional(),
+    latencyMs: z.number().int().nonnegative().optional(),
+  })
+  .strict();
+export type ModelTier = z.infer<typeof ModelTierSchema>;
+export type ServedBy = z.infer<typeof ServedBySchema>;
 export const VisualActionSchema = z
   .object({
     id,
@@ -373,6 +410,7 @@ export const VisualActionSchema = z
     area: BoardAreaSchema.optional(),
     viewport: BoardViewportSchema.optional(),
     source: z.enum(["demo", "live"]).optional(),
+    served: ServedBySchema.optional(),
     label: z.string().min(1).max(120).optional(),
     reason: z.string().max(1000),
     sceneId: id,
@@ -380,6 +418,7 @@ export const VisualActionSchema = z
   })
   .strict();
 export type SceneObject = z.infer<typeof SceneObjectSchema>;
+export type SceneConnection = z.infer<typeof SceneConnectionSchema>;
 export type Scene = z.infer<typeof SceneSchema>;
 export type Project = z.infer<typeof ProjectSchema>;
 export type VisualAction = z.infer<typeof VisualActionSchema>;
@@ -405,6 +444,7 @@ export const ClientMessageSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("listen"), enabled: z.boolean() }).strict(),
   z.object({ type: z.literal("applied"), actionId: id }).strict(),
   z.object({ type: z.literal("animation.completed"), actionId: id }).strict(),
+  z.object({ type: z.literal("animation.cancelled"), actionId: id }).strict(),
 ]);
 export type ClientMessage = z.infer<typeof ClientMessageSchema>;
 export type ServerMessage =
@@ -412,7 +452,7 @@ export type ServerMessage =
   | { type: "transcript"; text: string; final: boolean }
   | { type: "state"; state: string; cueId?: string }
   | { type: "action"; action: VisualAction }
-  | { type: "skipped"; reason: string }
+  | { type: "skipped"; reason: string; served?: ServedBy }
   | { type: "error"; message: string }
   | { type: "speech"; state: "listening" | "off" | "error" };
 export function targetIds(scene: Scene): string[] {

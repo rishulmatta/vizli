@@ -36,9 +36,25 @@ export function applyPresentationStep(
             );
         } else objects.push(object);
       }
+      const connections = [...scene.connections];
+      for (const connection of step.connections ?? []) {
+        if (
+          !objects.some((object) => object.id === connection.source) ||
+          !objects.some((object) => object.id === connection.target)
+        )
+          throw new Error("Sequence connection endpoint is missing.");
+        const previous = connections.find(
+          (existing) => existing.id === connection.id,
+        );
+        if (previous) {
+          if (JSON.stringify(previous) !== JSON.stringify(connection))
+            throw new Error("Sequence insertion would replace a connection.");
+        } else connections.push(connection);
+      }
       next = {
         ...scene,
         objects,
+        connections,
         ...(step.lesson ? { lesson: step.lesson } : {}),
       };
       break;

@@ -118,3 +118,21 @@ describe("configured API port", () => {
     }
   });
 });
+
+describe("provider status", () => {
+  it("reports Nemotron tiers and routing without credentials, and local rules in demo mode", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "vizli-test-"));
+    try {
+      const demo = await buildApp({ NODE_ENV: "test", DATA_DIR: dir });
+      expect((await demo.inject("/api/status")).json()).toMatchObject({ mode: "demo", models: null, routing: "local-rules", provider: null });
+      await demo.close();
+      const live = await buildApp({ NODE_ENV: "test", DATA_DIR: dir, NEBIUS_API_KEY: "secret-sentinel", NEBIUS_MODEL: "nvidia/nemotron-3-super-120b-a12b", NEBIUS_FAST_MODEL: "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B", NEBIUS_REASONING_MODEL: "nvidia/Nemotron-3-Ultra-550b-a55b" });
+      const body = (await live.inject("/api/status")).body;
+      expect(JSON.parse(body)).toMatchObject({ mode: "live", routing: "nemotron-first", provider: "nebius-token-factory", models: { fast: "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B", core: "nvidia/nemotron-3-super-120b-a12b", reasoning: "nvidia/Nemotron-3-Ultra-550b-a55b" } });
+      expect(body).not.toContain("secret-sentinel");
+      await live.close();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});

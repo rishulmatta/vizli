@@ -211,3 +211,65 @@ describe("live model boundary", () => {
     ).toBe("skip");
   });
 });
+
+describe("Nemotron-first routing", () => {
+  const decision = (intent: string, normalizedText: string, reason = "routed") => ({ intent: intent as never, normalizedText, reason, model: "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B", latencyMs: 350 });
+  const build = (router: ReturnType<typeof vi.fn>) => createNebiusResolver({ key: "k", model: "nvidia/nemotron-3-super-120b-a12b", baseUrl: "https://example.test/v1", router: router as never });
+  const matrix = { ...input, scene: p.scenes[1]! };
+  it("routes every final cue through the fast tier before grounding and records both the router and the planner", async () => {
+    const router = vi.fn().mockResolvedValue(decision("attention", "highlight matrix-a:row:1"));
+    vi.stubGlobal("fetch", vi.fn());
+    const result = await build(router)({ ...matrix, text: "highlight matrix-a:row:1", final: true });
+    expect(result).toMatchObject({ type: "highlight", targetId: "matrix-a:row:1", served: { provider: "local-rules", planner: "explicit-target", router: { model: "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B", tier: "fast", intent: "attention", latencyMs: 350 } } });
+    expect(router).toHaveBeenCalledTimes(1);
+    expect(router.mock.calls[0]![0]).toMatchObject({ text: "highlight matrix-a:row:1", scene: matrix.scene });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+  it("grounds a repaired transcript when the presenter's exact words match nothing", async () => {
+    const router = vi.fn().mockResolvedValue(decision("motion", "pulse revenue"));
+    vi.stubGlobal("fetch", vi.fn());
+    const result = await build(router)({ ...input, text: "pulse revenew", final: true });
+    expect(result).toMatchObject({ type: "animate", targetId: "revenue", animation: "pulse", served: { planner: "motion", router: { intent: "motion" } } });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+  it("declines tentative speech from the router without a paid core call and hands lessons to the reasoning tier", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    const tentative = await build(vi.fn().mockResolvedValue(decision("tentative", "we might highlight revenue", "Hedged idea")))({ ...input, text: "I was thinking about revenue here", final: true });
+    expect(tentative).toMatchObject({ type: "skip", reason: "Hedged idea", served: { planner: "intent-router" } });
+    const lesson = await build(vi.fn().mockResolvedValue(decision("lesson", "Explain how DNS resolution works")))({ ...input, text: "explain how dns resolution works", final: true });
+    expect(lesson).toMatchObject({ type: "author_lesson", prompt: "Explain how DNS resolution works", served: { provider: "nebius-token-factory", tier: "reasoning", router: { intent: "lesson" } } });
+    const unsupported = await build(vi.fn().mockResolvedValue(decision("unsupported", "what is the capital of france", "A question, not a visual change")))({ ...input, text: "what is the capital of france", final: true });
+    expect(unsupported).toMatchObject({ type: "skip", reason: "A question, not a visual change" });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+  it("still prefers deterministic lesson planners for matrix declarations after a lesson decision", async () => {
+    const router = vi.fn().mockResolvedValue(decision("lesson", "There are two matrices A and B. A is three by two and B is two by three."));
+    vi.stubGlobal("fetch", vi.fn());
+    const board = p.scenes.find((scene) => scene.layout === "whiteboard") ?? p.scenes[0]!;
+    const result = await build(router)({ ...input, scene: board, text: "There are two matrices A and B. A is three by two and B is two by three.", final: true });
+    expect(result.type).toBe("sequence");
+    expect(result.served).toMatchObject({ provider: "local-rules", planner: "domain-planner", router: { intent: "lesson" } });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+  it("skips routing for partial speech and falls back to deterministic order when the router fails", async () => {
+    const router = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("fetch", vi.fn());
+    const partial = await build(router)({ ...matrix, text: "highlight matrix-a:row:1", final: false });
+    expect(router).not.toHaveBeenCalled();
+    expect(partial).toMatchObject({ type: "highlight", served: { provider: "local-rules", planner: "explicit-target" } });
+    expect(partial.served?.router).toBeUndefined();
+    const fallback = await build(router)({ ...matrix, text: "highlight matrix-a:row:1", final: true });
+    expect(router).toHaveBeenCalledTimes(1);
+    expect(fallback).toMatchObject({ type: "highlight", targetId: "matrix-a:row:1" });
+    expect(fallback.served?.router).toBeUndefined();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+  it("labels core-tier actions with the model, tier, latency and the preceding router decision", async () => {
+    const router = vi.fn().mockResolvedValue(decision("freeform", "Highlight Matrix B"));
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ choices: [{ finish_reason: "stop", message: { content: JSON.stringify({ type: "highlight", targetId: "matrix-b", reason: "Requested", evidence: "Matrix B" }) } }] }))));
+    const result = await build(router)({ ...matrix, text: "Highlight Matrix B", final: true });
+    expect(result).toMatchObject({ type: "highlight", targetId: "matrix-b", served: { provider: "nebius-token-factory", model: "nvidia/nemotron-3-super-120b-a12b", tier: "core", router: { intent: "freeform" } } });
+    expect(result.served?.latencyMs).toBeGreaterThanOrEqual(0);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+});

@@ -60,12 +60,57 @@ Listening and animation are separate lifecycles: the microphone keeps working wh
 
 Built for the Nebius x NVIDIA Global AI Hackathon, **Best Apps and Agents** track. Project work began in October 2026, inside the submission period.
 
-- **Core reasoning: NVIDIA Nemotron 3 Super (`nvidia/nemotron-3-super-120b-a12b`) on Nebius Token Factory.** Every live spoken or typed instruction is sent to the Token Factory chat-completions API (`apps/server/src/resolver.ts`). Nemotron receives the current scene's objects, semantic parts and plugin capabilities and returns a strict JSON-Schema action: point, highlight, reveal, animate, navigate, move, add a component, retrieve an image, or edit an existing object. The server validates the proposal against the live scene revision before anything renders. Thinking is switched off for these fast calls through `chat_template_kwargs.enable_thinking=false`.
-- **Scene and illustration planning: the same Nemotron model through Token Factory** (`apps/server/src/generate.ts`). "Create from an idea" and spoken "Draw a software architecture" requests ask Nemotron for a complete validated scene of editable objects and connections, which is appended to the whiteboard.
-- **Speech: NVIDIA-hosted Nemotron ASR** (`apps/server/src/speech.ts`) streams microphone PCM over TLS gRPC and returns partial and final transcripts that feed the Nemotron interpreter above.
-- **What is deterministic:** Wikimedia image search, whiteboard navigation phrases and the matrix-multiplication lesson planner are rule-based and are labelled as such. Without credentials the app runs in a clearly labelled demo mode that performs no model inference.
+Vizli is **Nemotron-first**: in live mode every final spoken or typed cue is decided by a Nemotron model on Nebius Token Factory before any rule runs, and three Nemotron tiers share the work the way the track describes it.
 
-Live verification of the Token Factory path (scene generation, cue interpretation and hosted ASR → Nemotron → visual action) is recorded in [docs/STATUS.md](docs/STATUS.md); `pnpm check:hackathon` audits the configuration locally.
+```
+microphone ──▶ NVIDIA-hosted Nemotron ASR ──▶ transcript
+                                                 │
+                         ┌───────────────────────▼───────────────────────┐
+                         │  FAST · Nemotron 3 Nano on Token Factory       │
+                         │  classifies intent, repairs the transcript,    │
+                         │  declines tentative speech (every final cue)   │
+                         └──────┬───────────────────────────┬────────────┘
+                                │ grounded by a trusted tool │ no tool matches
+          ┌─────────────────────▼──────────┐    ┌───────────▼─────────────────────────┐
+          │ deterministic planners          │    │ CORE · Nemotron 3 Super              │
+          │ matrix lesson · targets · edits │    │ free-form visual action, strict JSON │
+          │ camera · images                 │    │ scene & illustration planning        │
+          └─────────────────────┬──────────┘    └───────────┬─────────────────────────┘
+                                │   lesson with no planner   │
+                                │  ┌─────────────────────────▼──────────┐
+                                │  │ REASONING · Nemotron 3 Ultra         │
+                                │  │ authors a lesson plan → compiled and │
+                                │  │ validated into presentation steps    │
+                                │  └─────────────────────────┬──────────┘
+                                ▼                            ▼
+                    validated VisualAction (with `served`: model, tier, latency) ──▶ canvas
+```
+
+| Tier | Model on Token Factory | What it does in Vizli | Measured p50 (12 Oct 2026) |
+| --- | --- | --- | --- |
+| Fast | `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B` | Routes every cue (`apps/server/src/intent.ts`): picks the grounding tool, repairs ASR errors, skips hedged speech, flags lesson requests | 1.13 s |
+| Core | `nvidia/nemotron-3-super-120b-a12b` | Free-form visual actions under a strict JSON Schema (`resolver.ts`); scene and illustration planning (`generate.ts`) | 1.48 s |
+| Reasoning | `nvidia/Nemotron-3-Ultra-550b-a55b` | Authors lessons for topics without a hand-written planner (`lessons.ts`); the server compiles and validates the plan | 4.76 s |
+
+- **Every action says who made it.** Actions carry `served` metadata (provider, model, tier, deterministic planner, router decision, latency) and the activity log prints it, for example “Nemotron 3 Nano routed “attention” 1.1 s → grounded by explicit-target” or “Nemotron 3 Super on Nebius 1.5 s”. Demo mode never claims a model ran.
+- **Thinking is switched off** for interactive calls through `chat_template_kwargs.enable_thinking=false`, and all outputs use `response_format: json_schema` with `strict: true`. One small client (`apps/server/src/nebius.ts`) serves every tier.
+- **Speech: NVIDIA-hosted Nemotron ASR** (`apps/server/src/speech.ts`) streams microphone PCM over TLS gRPC and returns partial and final transcripts. Partial speech only guides attention and never pays for routing or authoring.
+- **What stays deterministic, on purpose:** arithmetic, target IDs, layout and validation. The matrix-multiplication planner, explicit targets, edits, camera moves and Wikimedia image search are trusted tools that Nemotron selects; they never bypass scene-revision validation.
+- **Measured, not assumed.** `pnpm bench:nebius` makes real calls through the router, the interpreter and the lesson author and prints p50/p95 per tier; the latest table is in [docs/STATUS.md](docs/STATUS.md). `pnpm check:hackathon` verifies that every configured tier is an NVIDIA Nemotron model on a Token Factory endpoint.
+- **Hosted on Nebius too.** `deploy/nebius/` contains the Serverless AI Endpoint script and steps for running the whole app as one container next to Token Factory.
+
+Live verification of the Token Factory path (tiered cues, lesson authoring, scene generation and hosted ASR → Nemotron → visual action) is recorded in [docs/STATUS.md](docs/STATUS.md).
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/nemotron-provenance.png" alt="Activity log showing Nemotron 3 Nano routing a cue and Nemotron 3 Super resolving it" /></td>
+    <td width="50%"><img src="docs/screenshots/nemotron-lesson.png" alt="A DNS resolution lesson authored by Nemotron 3 Ultra drawn as cards on the whiteboard" /></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>“Point to revenue”: Nano routes, Super resolves, the log says so.</sub></td>
+    <td align="center"><sub>“Explain how DNS resolution works”: Ultra authors, the server compiles and validates, the canvas draws.</sub></td>
+  </tr>
+</table>
 
 ## Run locally
 
@@ -95,8 +140,9 @@ Existing objects can be edited with spoken or typed instructions. Try **“Make 
 Copy `.env.example` to `.env` at the repository root. Set:
 
 - `NVIDIA_API_KEY` to enable NVIDIA-hosted Nemotron ASR microphone transcription. Obtain a key with access from [NVIDIA's model API page](https://build.nvidia.com/nvidia/nemotron-asr-streaming/api). The hosted endpoint/function ID defaults are in `.env.example`.
-- `NEBIUS_API_KEY` and `NEBIUS_MODEL` to enable Nemotron interpretation through Nebius Token Factory. The selected initial model is `nvidia/nemotron-3-super-120b-a12b` (Nemotron 3 Super), populated in `.env.example`; verify it is enabled for your account.
-- Optionally `NEBIUS_PLANNING_MODEL` for a larger model used by **Create from an idea**; otherwise it uses `NEBIUS_MODEL`.
+- `NEBIUS_API_KEY` and `NEBIUS_MODEL` to enable Nemotron interpretation through Nebius Token Factory. The core model is `nvidia/nemotron-3-super-120b-a12b` (Nemotron 3 Super), populated in `.env.example`; verify it is enabled for your account.
+- `NEBIUS_FAST_MODEL` (Nemotron 3 Nano) for the intent router and `NEBIUS_REASONING_MODEL` (Nemotron 3 Ultra) for lesson authoring; both default to `NEBIUS_MODEL` when empty, so one model still runs everything.
+- Optionally `NEBIUS_PLANNING_MODEL` for a different model used by **Create from an idea**; otherwise it uses `NEBIUS_MODEL`.
 
 Restart the server after changing configuration. Keys remain on the server. Browser microphone permission is required and microphone capture needs localhost or HTTPS.
 
@@ -106,7 +152,7 @@ For the hackathon, the selected path is **NVIDIA-hosted Nemotron ASR + Nemotron 
 
 **Hackathon readiness:** NVIDIA-hosted speech alone does not satisfy the Nebius requirement. Configure `NEBIUS_API_KEY` and an actual NVIDIA Nemotron `NEBIUS_MODEL` on Token Factory, then verify meaningful live agent calls. The rule-based local demo is not evidence of Nebius execution. See [docs/HACKATHON.md](docs/HACKATHON.md) for the required validation and remaining submission work.
 
-Hosting direction: Vercel frontend, Railway backend/Postgres, and Cloudflare R2 assets. Railway/Postgres/R2 integration and external deployment are still pending; the existing Supabase feature below is optional and is not required for the demo.
+Hosting direction: one container on a Nebius Serverless AI Endpoint next to Token Factory (see [deploy/nebius/README.md](deploy/nebius/README.md)); Vercel plus Railway remains the fallback. The public deployment is still pending; the existing Supabase feature below is optional and is not required for the demo.
 
 ## Optional cloud library
 
@@ -122,11 +168,14 @@ pnpm test
 pnpm exec playwright install chromium
 pnpm test:e2e
 pnpm start
+pnpm bench:nebius
 ```
 
 `pnpm start` runs the API and serves the built web application after `pnpm build`. Development uses Vite with an API/WebSocket proxy.
 
-`pnpm check:hackathon` checks server configuration for the required Nebius/NVIDIA model path without spending credits or printing secrets. Missing keys cause a nonzero exit; the check does not certify live provider access or submission eligibility.
+`pnpm check:hackathon` checks server configuration for the required Nebius/NVIDIA model path, including every Nemotron tier, without spending credits or printing secrets. Missing keys cause a nonzero exit; the check does not certify live provider access or submission eligibility.
+
+`pnpm bench:nebius` makes real, billable Token Factory calls through the router, the interpreter and the lesson author and prints a per-tier latency table (`BENCH_RUNS` sets runs per cue).
 
 ## Architecture
 
@@ -135,7 +184,7 @@ pnpm start
 - React Flow for editable architecture diagrams; ELK for layout.
 - XState for explicit interaction/session transitions.
 - Fastify + WebSockets for speech and validated actions.
-- NVIDIA-hosted Nemotron ASR for live transcription and Nemotron on Nebius Token Factory for interpretation.
+- NVIDIA-hosted Nemotron ASR for live transcription; three Nemotron tiers on Nebius Token Factory (Nano router, Super interpreter and planner, Ultra lesson author) for interpretation.
 - Validated project JSON and local persistence, with optional Supabase Auth/Postgres cloud save/load.
 
 The project targets the Nebius x NVIDIA hackathon. Runtime Nemotron inference through Token Factory is the intended qualifying integration. A demo-only run does not demonstrate that integration.

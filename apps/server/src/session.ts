@@ -7,6 +7,8 @@ import {
   validatePresentationSequence,
 } from "@vizli/shared";
 import { generateScene, type ScenePlanner } from "./generate.js";
+import type { LessonAuthor } from "./lessons.js";
+import { isArchitectureDomainCue } from "./domains/architecture.js";
 import { createAnchoredImage, type ImageSearch } from "./images.js";
 import { createActor, createMachine, type AnyActorRef } from "xstate";
 import { randomUUID, createHash } from "node:crypto";
@@ -21,9 +23,24 @@ import {
   normalize,
   ModelResponseError,
   type Resolver,
+  type Proposal,
 } from "./resolver.js";
+type ResolvedActionProposal = Omit<Proposal, "type"> & {
+  type: Exclude<Proposal["type"], "skip" | "author_lesson">;
+};
+const stableJson = (value: unknown): string => {
+  if (value === undefined) return "null";
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record)
+    .filter((key) => record[key] !== undefined)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${stableJson(record[key])}`)
+    .join(",")}}`;
+};
 const sceneFingerprint = (scene: Scene) =>
-  createHash("sha256").update(JSON.stringify(scene)).digest("hex");
+  createHash("sha256").update(stableJson(scene)).digest("hex");
 export const cueMachine = createMachine({
   id: "cue",
   initial: "candidate",
@@ -93,12 +110,22 @@ export class VisualSession {
   private lastSpeech = "";
   private latestPartial?: string;
   private speechInFlight = false;
+  /** Final architecture clauses wait for the current insertion sequence to finish, then plan against its committed snapshot. */
+  private architecturePlaybackAction?: string;
+  private architectureResolvingAction?: string;
+  private architectureQueue: Array<{
+    text: string;
+    fromSpeech: boolean;
+    seen: Set<string>;
+  }> = [];
   private timer?: ReturnType<typeof setTimeout>;
   constructor(
     private send: (m: ServerMessage) => void,
     private resolver?: Resolver,
     private imageSearch?: ImageSearch,
     private scenePlanner?: ScenePlanner,
+    /** Reasoning-tier Nemotron lesson author; absent in demo mode. */
+    private lessonAuthor?: LessonAuthor,
   ) {}
   setScene(
     scene: Scene,
@@ -113,7 +140,7 @@ export class VisualSession {
     if (
       revision === this.revision &&
       this.scene &&
-      JSON.stringify(scene) !== JSON.stringify(this.scene)
+      stableJson(scene) !== stableJson(this.scene)
     ) {
       this.send({
         type: "error",
@@ -125,9 +152,8 @@ export class VisualSession {
       const cameraOnly =
         this.scene?.id === scene.id &&
         this.scene?.layout === scene.layout &&
-        JSON.stringify(this.scene?.objects) === JSON.stringify(scene.objects) &&
-        JSON.stringify(this.scene?.connections) ===
-          JSON.stringify(scene.connections);
+        stableJson(this.scene?.objects) === stableJson(scene.objects) &&
+        stableJson(this.scene?.connections) === stableJson(scene.connections);
       const playback = sequenceId
         ? this.sequenceSnapshots.get(sequenceId)
         : undefined;
@@ -140,6 +166,11 @@ export class VisualSession {
             )
           : -1;
       if (playback && expectedIndex >= 0) playback.cursor = expectedIndex;
+      if (expectedIndex < 0) {
+        this.architectureQueue = [];
+        this.architectureResolvingAction = undefined;
+        if (!cameraOnly) this.architecturePlaybackAction = undefined;
+      }
       this.invalidate(cameraOnly || expectedIndex >= 0);
       this.speechSeen.clear();
     }
@@ -270,6 +301,22 @@ export class VisualSession {
       });
       return;
     }
+    const architectureClause = final && isArchitectureDomainCue(text);
+    if (this.architecturePlaybackAction || this.architectureResolvingAction) {
+      if (architectureClause) {
+        if (this.architectureQueue.length >= 20) {
+          this.send({
+            type: "skipped",
+            reason: "The architecture lesson queue is full. Let the current stage finish, then continue.",
+          });
+          return;
+        }
+        this.architectureQueue.push({ text, fromSpeech, seen: new Set(seen) });
+        return;
+      }
+      // A direct edit or unrelated cue changes the user’s direction. Never replay queued clauses against its newer scene.
+      this.architectureQueue = [];
+    }
     this.abort?.abort();
     if (this.pending?.getSnapshot().status === "active")
       this.pending.send({ type: "INVALIDATE" });
@@ -277,6 +324,7 @@ export class VisualSession {
       scene = this.scene,
       revision = this.revision,
       id = randomUUID();
+    if (architectureClause) this.architectureResolvingAction = id;
     const actor = createActor(cueMachine);
     this.pending = actor;
     this.pendingFromSpeech = fromSpeech;
@@ -296,13 +344,14 @@ export class VisualSession {
     let searching = false;
     let planning = false;
     try {
-      const p = await Promise.race([
+      const resolved: Proposal = await Promise.race([
         this.resolver
           ? this.resolver({
               text,
               scene,
               cues: this.cues,
               signal: controller.signal,
+              final,
             })
           : Promise.resolve(localResolve({ text, scene, cues: this.cues })),
         aborted,
@@ -312,9 +361,13 @@ export class VisualSession {
           actor.send({ type: "INVALIDATE" });
         return;
       }
-      if (p.type === "skip") {
+      if (resolved.type === "skip") {
         actor.send({ type: "SKIP" });
-        this.send({ type: "skipped", reason: p.reason });
+        this.send({
+          type: "skipped",
+          reason: resolved.reason,
+          ...(resolved.served ? { served: resolved.served } : {}),
+        });
         return;
       }
       if (
@@ -329,11 +382,47 @@ export class VisualSession {
           "add_illustration",
           "edit_object",
           "sequence",
-        ].includes(p.type)
+          "author_lesson",
+        ].includes(resolved.type)
       ) {
         actor.send({ type: "SKIP" });
         return;
       }
+      let p: ResolvedActionProposal;
+      if (resolved.type === "author_lesson") {
+        if (!resolved.prompt) throw new Error("Describe the topic you want explained.");
+        if (!this.lessonAuthor) {
+          actor.send({ type: "SKIP" });
+          this.send({
+            type: "skipped",
+            reason:
+              "Lesson authoring needs the Nemotron reasoning tier on Nebius; demo mode only plays built-in lessons.",
+          });
+          return;
+        }
+        planning = true;
+        actor.send({ type: "PLAN" });
+        clearTimeout(timeout);
+        timeout = setTimeout(() => controller.abort(), 25000);
+        const authored = await Promise.race([
+          this.lessonAuthor({ prompt: resolved.prompt, scene, signal: controller.signal }),
+          aborted,
+        ]);
+        if (generation !== this.generation || controller.signal.aborted) {
+          if (actor.getSnapshot().status === "active")
+            actor.send({ type: "INVALIDATE" });
+          return;
+        }
+        const served = authored.served
+          ? { ...authored.served, ...(resolved.served?.router ? { router: resolved.served.router } : {}) }
+          : resolved.served;
+        if (authored.type === "skip") {
+          actor.send({ type: "SKIP" });
+          this.send({ type: "skipped", reason: authored.reason, ...(served ? { served } : {}) });
+          return;
+        }
+        p = { type: "sequence", sequence: authored.sequence, reason: authored.reason, served };
+      } else p = resolved as ResolvedActionProposal;
       const fingerprint = `${scene.id}:${p.type}:${p.targetId ?? p.label ?? ""}:${p.query ?? p.prompt ?? ""}:${JSON.stringify(p.navigation ?? {})}:${p.dx ?? 0}:${p.dy ?? 0}:${JSON.stringify(p.patch ?? {})}:${p.animation ?? ""}:${p.color ?? ""}:${p.sequence?.id ?? ""}`;
       if (fromSpeech && seen.has(fingerprint)) {
         actor.send({ type: "SKIP" });
@@ -368,6 +457,7 @@ export class VisualSession {
       let object;
       let illustration: Scene | undefined;
       let illustrationSource: "demo" | "live" | undefined;
+      let illustrationServed: VisualAction["served"];
       if (p.type === "add_illustration") {
         if (!p.prompt || scene.layout !== "whiteboard") {
           actor.send({ type: "SKIP" });
@@ -398,6 +488,9 @@ export class VisualSession {
         }
         illustration = appendIllustration(scene, result.scene);
         illustrationSource = result.source;
+        illustrationServed = result.served
+          ? { ...result.served, ...(p.served?.router ? { router: p.served.router } : {}) }
+          : p.served;
       }
       if (p.type === "add_node" && scene.layout === "whiteboard") {
         const view = getSceneViewport(scene);
@@ -474,6 +567,7 @@ export class VisualSession {
         ),
         viewport: illustration?.viewport,
         source: illustrationSource,
+        served: illustrationServed ?? p.served,
         reason:
           illustrationSource === "demo"
             ? "Added a predefined illustration template (demo); no model generation was performed."
@@ -488,6 +582,10 @@ export class VisualSession {
       this.actors.set(id, actor);
       if (fromSpeech && !final) this.speculative.add(id);
       this.pending = undefined;
+      if (p.type === "sequence" && p.sequence?.domain === "architecture.aws-request-flow") {
+        this.architectureResolvingAction = undefined;
+        this.architecturePlaybackAction = id;
+      }
       if (this.actors.size > 100) {
         const oldest = this.actors.keys().next().value!;
         this.actors.get(oldest)?.stop();
@@ -509,7 +607,7 @@ export class VisualSession {
           planning &&
           (controller.signal.aborted ||
             (error instanceof Error && error.name === "TimeoutError"))
-            ? "Illustration planning timed out. Try a simpler idea."
+            ? "Planning timed out. Try a simpler idea or a narrower topic."
             : searching &&
                 (controller.signal.aborted ||
                   (error instanceof Error && error.name === "TimeoutError"))
@@ -525,6 +623,10 @@ export class VisualSession {
     } finally {
       clearTimeout(timeout);
       controller.signal.removeEventListener("abort", onAbort);
+      if (this.architectureResolvingAction === id) {
+        this.architectureResolvingAction = undefined;
+        this.drainArchitectureQueue();
+      }
     }
   }
   applied(id: string) {
@@ -535,8 +637,42 @@ export class VisualSession {
       if (record.actionId === id) this.sequenceSnapshots.delete(sequenceId);
     this.actors.get(id)?.send({ type: "COMPLETE" });
     this.actors.delete(id);
+    if (this.architecturePlaybackAction === id) {
+      this.architecturePlaybackAction = undefined;
+      this.drainArchitectureQueue();
+    }
+  }
+  cancel(id: string) {
+    for (const [sequenceId, record] of this.sequenceSnapshots)
+      if (record.actionId === id) this.sequenceSnapshots.delete(sequenceId);
+    const actor = this.actors.get(id);
+    if (actor?.getSnapshot().status === "active") actor.send({ type: "INVALIDATE" });
+    this.actors.delete(id);
+    if (this.architecturePlaybackAction === id) {
+      this.architecturePlaybackAction = undefined;
+      this.architectureQueue = [];
+    }
+    if (this.architectureResolvingAction === id) {
+      this.architectureResolvingAction = undefined;
+      this.abort?.abort();
+      this.architectureQueue = [];
+    }
+  }
+  private drainArchitectureQueue() {
+    if (
+      this.architecturePlaybackAction ||
+      this.architectureResolvingAction ||
+      this.architectureQueue.length === 0 ||
+      !this.scene
+    )
+      return;
+    const next = this.architectureQueue.shift()!;
+    void this.cue(next.text, true, next.fromSpeech, next.seen);
   }
   close() {
+    this.architectureQueue = [];
+    this.architecturePlaybackAction = undefined;
+    this.architectureResolvingAction = undefined;
     this.invalidate();
     this.session.send({ type: "CLOSE" });
     this.session.stop();

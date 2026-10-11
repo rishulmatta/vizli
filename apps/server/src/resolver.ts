@@ -15,9 +15,12 @@ import {
   resolveImageAnchor,
   hasTarget,
   targetIds,
+  ServedBySchema,
   type Scene,
   type Project,
+  type ServedBy,
 } from "@vizli/shared";
+import { routerServed, type Intent, type IntentRouter } from "./intent.js";
 export class ModelResponseError extends Error {
   constructor(message: string) {
     super(message);
@@ -39,9 +42,12 @@ export const ProposalSchema = z
       "add_illustration",
       "edit_object",
       "sequence",
+      "author_lesson",
       "undo",
       "skip",
     ]),
+    /** Set by the server after routing; never part of the provider-constrained output. */
+    served: ServedBySchema.optional(),
     color: AttentionColorSchema.optional(),
     durationMs: z.number().int().min(100).max(5000).optional(),
     sequence: PresentationSequenceSchema.optional(),
@@ -619,6 +625,8 @@ export type ResolveInput = {
   scene: Scene;
   cues: Project["cues"];
   signal: AbortSignal;
+  /** Partial speech (false) never pays for routing or authoring; finals default to true. */
+  final?: boolean;
 };
 export type Resolver = (input: ResolveInput) => Promise<Proposal>;
 export const normalize = (s: string) =>
@@ -1102,28 +1110,105 @@ export function localResolve({
     text,
   );
 }
+/** Deterministic grounding tools. They own target IDs and arithmetic; Nemotron chooses which one runs first. */
+type Grounding = {
+  planner: string;
+  run: (text: string, scene: Scene) => Proposal | undefined;
+};
+const GROUNDINGS: readonly Grounding[] = [
+  { planner: "domain-planner", run: planDomainPresentation },
+  { planner: "motion", run: motionCue },
+  { planner: "explicit-target", run: explicitTargetCue },
+  { planner: "edit", run: resolveEditRequest },
+  { planner: "board", run: resolveBoardRequest },
+  { planner: "image", run: resolveImageRequest },
+];
+const PREFERRED_GROUNDING: Partial<Record<Intent, string[]>> = {
+  lesson: ["domain-planner"],
+  attention: ["explicit-target", "motion"],
+  motion: ["motion", "explicit-target"],
+  board: ["board"],
+  edit: ["edit", "domain-planner"],
+  image: ["image"],
+};
+function orderedGroundings(intent?: Intent): Grounding[] {
+  const preferred = (intent && PREFERRED_GROUNDING[intent]) ?? [];
+  return [
+    ...preferred.map((name) => GROUNDINGS.find((g) => g.planner === name)!),
+    ...GROUNDINGS.filter((g) => !preferred.includes(g.planner)),
+  ];
+}
 export function createNebiusResolver(config: {
   key: string;
   model: string;
   baseUrl: string;
   usage?: UsageGuard;
+  /** Fast-tier Nemotron router; omitted keeps the deterministic-first order for single-model setups and tests. */
+  router?: IntentRouter;
 }): Resolver {
   return async (input) => {
     const unsupported = unsupportedCue(input.text);
     if (unsupported) return unsupported;
-    const domainPlan = planDomainPresentation(input.text, input.scene);
-    if (domainPlan) return domainPlan;
-    const motion = motionCue(input.text, input.scene);
-    if (motion) return motion;
-    const explicit = explicitTargetCue(input.text, input.scene);
-    if (explicit) return explicit;
-    const edit = resolveEditRequest(input.text, input.scene);
-    if (edit) return edit;
-    const board = resolveBoardRequest(input.text, input.scene);
-    if (board) return board;
-    const image = resolveImageRequest(input.text, input.scene);
-    if (image) return image;
+    // Nemotron first: the fast tier classifies every final cue and repairs transcription before grounding.
+    const decision =
+      input.final !== false && config.router
+        ? await config.router({
+            text: input.text,
+            scene: input.scene,
+            signal: input.signal,
+          })
+        : undefined;
+    const router = decision ? routerServed(decision) : undefined;
+    const grounded = (planner: string): ServedBy => ({
+      provider: "local-rules",
+      planner,
+      ...(router ? { router } : {}),
+    });
+    if (decision?.intent === "tentative")
+      return {
+        type: "skip",
+        reason: decision.reason || "That sounded tentative. Give an explicit instruction when you are ready.",
+        served: grounded("intent-router"),
+      };
+    const n = normalize(stripPolite(input.text));
+    if (decision?.intent === "undo" && /^undo\b/.test(n))
+      return { type: "undo", reason: "Explicit undo command.", served: grounded("intent-router") };
+    if (
+      decision?.intent === "clear" &&
+      /^(clear|remove|hide|stop) (the )?(highlight|pointer|effects?|animation)s?$/.test(n)
+    )
+      return { type: "clear", reason: "Cleared the temporary visual emphasis.", served: grounded("intent-router") };
+    const texts =
+      decision && normalize(decision.normalizedText) !== normalize(input.text)
+        ? [input.text, decision.normalizedText]
+        : [input.text];
+    for (const grounding of orderedGroundings(decision?.intent))
+      for (const text of texts) {
+        const proposal = grounding.run(text, input.scene);
+        if (proposal) return { ...proposal, served: grounded(grounding.planner) };
+      }
+    if (decision?.intent === "unsupported")
+      return {
+        type: "skip",
+        reason: decision.reason || "That request is outside what the canvas can show.",
+        served: grounded("intent-router"),
+      };
+    if (decision?.intent === "lesson")
+      return {
+        type: "author_lesson",
+        prompt: (decision.normalizedText || input.text).slice(0, 4000),
+        reason: decision.reason || "Authoring a lesson for this topic.",
+        served: { provider: "nebius-token-factory", tier: "reasoning", ...(router ? { router } : {}) },
+      };
     const release = config.usage?.acquireLLM();
+    const started = Date.now();
+    const servedByModel = (): ServedBy => ({
+      provider: "nebius-token-factory",
+      model: config.model,
+      tier: "core",
+      latencyMs: Date.now() - started,
+      ...(router ? { router } : {}),
+    });
     try {
       const response = await fetch(
         `${config.baseUrl.replace(/\/$/, "")}/chat/completions`,
@@ -1247,8 +1332,12 @@ export function createNebiusResolver(config: {
         return {
           type: "skip",
           reason: "The model did not ground its reference in the spoken words.",
+          served: servedByModel(),
         };
-      return validateProposal(proposal, input.scene, input.text);
+      return {
+        ...validateProposal(proposal, input.scene, input.text),
+        served: servedByModel(),
+      };
     } finally {
       release?.();
     }

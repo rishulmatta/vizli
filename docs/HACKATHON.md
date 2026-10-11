@@ -21,12 +21,16 @@ Microphone → Railway speech adapter → NVIDIA-hosted Nemotron ASR → transcr
 
 | Layer | Selected technology | Role in this track |
 | --- | --- | --- |
-| Core AI | NVIDIA Nemotron 3 Super via Nebius Token Factory | Required model/platform path; powers actual scene decisions and generation |
+| Fast tier | NVIDIA Nemotron 3 Nano (`nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B`) via Token Factory | Nemotron-first intent routing and transcript repair on every final cue (`apps/server/src/intent.ts`) |
+| Core tier | NVIDIA Nemotron 3 Super (`nvidia/nemotron-3-super-120b-a12b`) via Token Factory | Free-form visual actions, scene and illustration planning (`resolver.ts`, `generate.ts`) |
+| Reasoning tier | NVIDIA Nemotron 3 Ultra (`nvidia/Nemotron-3-Ultra-550b-a55b`) via Token Factory | Authors validated lessons for topics without a built-in planner (`lessons.ts`) |
 | Speech input | NVIDIA-hosted Nemotron ASR | Additional NVIDIA integration; does not substitute for Token Factory execution |
 | Application | React/TypeScript, Fastify/WebSockets, XState | Application and session logic; no framework is prescribed by the track |
 | Editable graphics | SVG/HTML, React Flow, ELK, KaTeX | Structured visual output, mathematical notation and object manipulation |
-| Web/API hosting | Vercel + Railway (planned) | Supporting hosting; Serverless Endpoints/Jobs are optional in the published track |
-| Persistence/assets | Railway PostgreSQL + R2 (planned) | Application data; no database/storage vendor is prescribed |
+| Web/API hosting | Nebius Serverless AI Endpoint running the container (`deploy/nebius/`, prepared); Vercel + Railway fallback | The track encourages Nebius Serverless; the endpoint has not been created yet |
+| Persistence/assets | In-container `.data` for the demo; Railway PostgreSQL + R2 later | Application data; no database/storage vendor is prescribed |
+
+The tiering follows the track text ("Reach for Nemotron 3 Ultra when you need serious reasoning", "let Nano or Super handle the fast, everyday calls"). Measured on 12 October 2026 with `pnpm bench:nebius`: fast p50 1.13 s, core p50 1.48 s, reasoning p50 4.76 s (table in `docs/STATUS.md`). Each action's `served` metadata and the activity log name the tier that produced it, so a judge can see Nemotron deciding on every cue rather than only on the fallthrough.
 
 Keep core Nemotron use meaningful: contextual reference resolution, validated visual actions and generated scenes must be demonstrated through Token Factory. Simple deterministic operations such as image search and navigation can coexist; they are not the primary AI evidence. Do not add Ultra, Serverless Jobs or another service only to mention it in the submission. Use them if the workload needs them.
 
@@ -57,4 +61,13 @@ Checked against the official rules page (loaded in a real browser on 11 October 
 | Submission "original work ... solely owned" by the entrant; no Sponsor/Administrator financial support | Met. |
 | All materials in English | Met. |
 
-Remaining actions before submitting: public deployment with a stable URL, the YouTube video, the Devpost description and feedback fields, and a final `pnpm check:hackathon` plus a live cue through the deployed app.
+Remaining actions before submitting: public deployment with a stable URL (Nebius Serverless AI Endpoint per `deploy/nebius/README.md`), the YouTube video showing live mode with the tier labels visible, the Devpost description and feedback fields, and a final `pnpm check:hackathon` plus a live cue through the deployed app.
+
+## Judging criteria and how the stack answers them — 12 October 2026
+
+| Criterion (Devpost wording) | Evidence in Vizli |
+| --- | --- |
+| Technological Implementation: "how effectively does it use Nebius Token Factory or AI Cloud model(s)" | Three Nemotron tiers on Token Factory, Nemotron-first routing on every live cue, strict JSON-schema outputs, measured latency, provenance on every action |
+| Design: "a complete, coherent product experience" | Editable canvas, undo, persistence, concurrent listening and animation, labelled demo mode, honest acknowledgements |
+| Potential Impact: "a credible, specific case for solving a real problem" | Teachers and presenters narrating while visuals follow; matrix lesson and authored lessons as concrete cases |
+| Quality of the Idea: "a creative, non-obvious use of ... NVIDIA Nemotron" | Voice-driven visual explanation with model-authored, server-validated lessons and speech-revision fencing |

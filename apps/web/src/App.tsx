@@ -64,12 +64,15 @@ import CreateScene from "./generation/CreateScene";
 import CloudSync from "./cloud/CloudSync";
 import { modeMachine, connectionMachine, inputMachine } from "./lib/machines";
 import { captureAudio } from "./lib/audio";
+import { describeServed, shortModelName } from "./lib/served";
 
 type ProviderStatus = {
   mode: "demo" | "live";
   speechConfigured: boolean;
   modelConfigured: boolean;
   model: string | null;
+  models?: { fast: string; core: string; reasoning: string } | null;
+  routing?: "nemotron-first" | "local-rules";
 };
 type Log = {
   id: string;
@@ -78,6 +81,19 @@ type Log = {
 };
 const uid = () => crypto.randomUUID();
 const LOCAL_KEY = "vizli.project.v1";
+const AWS_SERVICE_LABELS: Record<
+  NonNullable<SceneObject["aws"]>["service"],
+  string
+> = {
+  lambda: "Lambda function",
+  s3: "S3 bucket",
+  apigateway: "API Gateway",
+  dynamodb: "DynamoDB table",
+  ec2: "EC2 instance",
+  route53: "Route 53 routing policy",
+  alb: "Application Load Balancer",
+  rds: "RDS database",
+};
 function validProject(value: unknown): value is Project {
   return ProjectSchema.safeParse(value).success;
 }
@@ -235,6 +251,7 @@ export default function App() {
       selfSequenceId.current=sequenceId;projectRef.current=nextProject;setProject(nextProject);
     },
     acknowledge:(actionId,complete)=>send({type:complete?'animation.completed':'applied',actionId}),
+    onCancel:actionId=>send({type:'animation.cancelled',actionId}),
     onError:message=>{addLog(message,'error');setNotice(message);},
   });
   cancelPlaybackRef.current=()=>{playback.cancel();selfSequenceId.current=undefined;};
@@ -247,6 +264,7 @@ export default function App() {
       if (action.sceneId !== current.id || action.revision !== revision.current)
         return;
       if (action.type === "sequence") {
+        if (playback.active) cancelPlaybackRef.current();
         historySequenceId.current=undefined;
         if(playback.start(action)){setEffect(null);addLog(action.reason||'Presentation sequence started','action');}
         return;
@@ -346,7 +364,8 @@ export default function App() {
         pendingBoardEffect.current={action,startedAt:Date.now()};
         updateScene(next);
       } else setEffect({ action, startedAt: Date.now() });
-      addLog(action.reason || `${action.type} applied`, "action");
+      const served = describeServed(action.served);
+      addLog(`${action.reason || `${action.type} applied`}${served ? ` · ${served}` : ""}`, "action");
     },
     [addLog, send, undo, updateScene, playback],
   );
@@ -377,7 +396,8 @@ export default function App() {
           if (message.type === "transcript") setTranscript(message.text);
           if (message.type === "state") setCueState(message.state);
           if (message.type === "skipped") {
-            addLog(message.reason, "skip");
+            const served = describeServed(message.served);
+            addLog(`${message.reason}${served ? ` · ${served}` : ""}`, "skip");
             setCueState("Skipped");
           }
           if (message.type === "error") {
@@ -568,7 +588,6 @@ export default function App() {
   }
   function submitCue(text = cue, source: "typed" | "demo" = "typed") {
     if (!text.trim()) return;
-    cancelPlaybackRef.current();
     if (!send({ type: "cue", text: text.trim(), source, mode: mode.value })) {
       setNotice(
         "Connect the Vizli server to interpret cues. Your canvas is still editable.",
@@ -661,7 +680,7 @@ export default function App() {
   function addPlugin(id:Parameters<typeof createPluginObject>[0],service?:NonNullable<SceneObject['aws']>['service']) {
     const camera=getSceneViewport(scene);
     const object=createPluginObject(id,uid(),(scene.layout==='whiteboard'?camera.x:0)+140,(scene.layout==='whiteboard'?camera.y:0)+180);
-    if(service&&object.aws){object.aws={...object.aws,service};object.label=({lambda:'Lambda function',s3:'S3 bucket',apigateway:'API Gateway',dynamodb:'DynamoDB table',ec2:'EC2 instance'} as const)[service];}
+    if(service&&object.aws){object.aws={...object.aws,service};object.label=AWS_SERVICE_LABELS[service];}
     const next=SceneSchema.safeParse({...scene,objects:[...scene.objects,object]});
     if(!next.success){setNotice('This component could not be added to the current scene.');return;}
     updateScene(next.data);setSelectedId(object.id);setAddOpen(false);
@@ -1625,8 +1644,12 @@ export default function App() {
                 </p>
                 <div className="provider-row">
                   <div>
-                    <strong>Nemotron · Nebius</strong>
-                    <span>{status.model || "Visual cue interpretation"}</span>
+                    <strong>Nemotron · Nebius Token Factory</strong>
+                    <span>
+                      {status.models
+                        ? `Nemotron-first routing across three tiers`
+                        : status.model || "Visual cue interpretation"}
+                    </span>
                   </div>
                   <span
                     className={`provider-badge ${status.modelConfigured ? "configured" : ""}`}
@@ -1634,6 +1657,25 @@ export default function App() {
                     {status.modelConfigured ? "Configured" : "Not configured"}
                   </span>
                 </div>
+                {status.models && (
+                  <div className="provider-tiers" data-testid="provider-tiers">
+                    {(
+                      [
+                        ["fast", "Routes every cue, repairs transcripts"],
+                        ["core", "Free-form visual actions, scene planning"],
+                        ["reasoning", "Authors lessons for new topics"],
+                      ] as const
+                    ).map(([tier, role]) => (
+                      <div className="provider-tier" key={tier}>
+                        <span className="tier-name">{tier}</span>
+                        <span className="tier-model" title={status.models![tier]}>
+                          {shortModelName(status.models![tier])}
+                        </span>
+                        <span className="tier-role">{role}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
                 <div className="provider-row">
                   <div>
                     <strong>NVIDIA Nemotron ASR</strong>

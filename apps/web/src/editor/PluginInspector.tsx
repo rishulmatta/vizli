@@ -90,6 +90,9 @@ export default function PluginInspector({ object, onApply, onCue }: Props) {
               <option value="apigateway">API Gateway</option>
               <option value="dynamodb">DynamoDB</option>
               <option value="ec2">EC2</option>
+              <option value="route53">Route 53</option>
+              <option value="alb">Application Load Balancer</option>
+              <option value="rds">RDS</option>
             </select>
           </label>
           <label>

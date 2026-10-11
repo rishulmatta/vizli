@@ -50,6 +50,8 @@ export function checkHackathonConfig(env: NodeJS.ProcessEnv): PreflightCheck[] {
     credential("NVIDIA_API_KEY", !!config.nvidiaKey),
     model("NEBIUS_MODEL", config.liveModel),
     model("Effective planning model", config.planningModel),
+    model("Effective fast tier (NEBIUS_FAST_MODEL)", config.fastModel),
+    model("Effective reasoning tier (NEBIUS_REASONING_MODEL)", config.reasoningModel),
     {
       name: "NEBIUS_BASE_URL",
       status: validEndpoint ? "pass" : "mismatch",

@@ -11,7 +11,8 @@
     "test": "pnpm -r --if-present test",
     "test:e2e": "playwright test",
     "start": "pnpm --filter @vizli/server start",
-    "check:hackathon": "pnpm --filter @vizli/server exec tsx src/check-hackathon.ts"
+    "check:hackathon": "pnpm --filter @vizli/server exec tsx src/check-hackathon.ts",
+    "bench:nebius": "pnpm --filter @vizli/server exec tsx src/bench-nebius.ts"
   },
   "devDependencies": {
     "@playwright/test": "^1.56.0",

@@ -16,4 +16,5 @@ ENV DATA_DIR=/app/.data
 RUN mkdir -p /app/.data && chown -R node:node /app
 USER node
 EXPOSE 3001
-CMD ["pnpm", "start"]
+# Start the server directly: pnpm via corepack would re-download itself at runtime under the node user.
+CMD ["apps/server/node_modules/.bin/tsx", "apps/server/src/index.ts"]

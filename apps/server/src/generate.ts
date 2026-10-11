@@ -2,7 +2,7 @@ import { readProviderConfig } from "./config.js";
 import type { UsageGuard } from "./usage.js";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { SceneSchema, createDemoProject, type Scene } from "@vizli/shared";
+import { SceneSchema, createDemoProject, type Scene, type ServedBy } from "@vizli/shared";
 export const GenerateRequestSchema = z
   .object({
     prompt: z.string().trim().min(1).max(4000),
@@ -68,13 +68,18 @@ export async function generateScene(
   env: NodeJS.ProcessEnv,
   usage?: UsageGuard,
   signal?:AbortSignal,
-): Promise<{ scene: Scene; source: "demo" | "live" }> {
+): Promise<GeneratedScene> {
   signal?.throwIfAborted();
   const providerConfig = readProviderConfig(env);
   const model = providerConfig.planningModel;
   if (!providerConfig.nebiusKey || !model)
-    return { scene: templateScene(request.kind), source: "demo" };
+    return {
+      scene: templateScene(request.kind),
+      source: "demo",
+      served: { provider: "local-rules", planner: "template" },
+    };
   const release = usage?.acquireLLM();
+  const started = Date.now();
   try {
     const response = await fetch(`${providerConfig.baseUrl}/chat/completions`, {
       method: "POST",
@@ -132,10 +137,27 @@ export async function generateScene(
       source: ids.get(connection.source)!,
       target: ids.get(connection.target)!,
     }));
-    return { scene: SceneSchema.parse(scene), source: "live" };
+    return {
+      scene: SceneSchema.parse(scene),
+      source: "live",
+      served: {
+        provider: "nebius-token-factory",
+        model,
+        tier: model === providerConfig.reasoningModel && model !== providerConfig.liveModel ? "reasoning" : "core",
+        planner: "scene-planner",
+        latencyMs: Date.now() - started,
+      },
+    };
   } finally {
     release?.();
   }
 }
-
-export type ScenePlanner=(request:GenerateRequest,signal:AbortSignal)=>Promise<{scene:Scene;source:"demo"|"live"}>;
+export type GeneratedScene = {
+  scene: Scene;
+  source: "demo" | "live";
+  served?: ServedBy;
+};
+export type ScenePlanner = (
+  request: GenerateRequest,
+  signal: AbortSignal,
+) => Promise<GeneratedScene>;

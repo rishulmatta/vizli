@@ -62,6 +62,7 @@ type Options = {
   readScene: () => Scene;
   commitScene: (scene: Scene, sequenceId: string) => void;
   acknowledge: (actionId: string, complete: boolean) => void;
+  onCancel?: (actionId: string) => void;
   onError: (message: string) => void;
 };
 export function usePresentationPlayback(options: Options) {
@@ -103,6 +104,8 @@ export function usePresentationPlayback(options: Options) {
     [actor, send],
   );
   const cancel = useCallback(() => {
+    const action = sequence.current;
+    if (action) latest.current.onCancel?.(action.id);
     clearTimer();
     started.current = "";
     pendingDone.current = false;

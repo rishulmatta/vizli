@@ -1,6 +1,6 @@
 # Vizli build status and handoff
 
-Last updated: 11 October 2026. Phase: narrated matrix lesson implemented; review-driven correctness fixes applied (see the 11 October section at the end).
+Last updated: 12 October 2026. Phase: narrated matrix lesson and bounded AWS request-flow narration implemented and locally verified. See the 12 October section below for evidence and limitations.
 
 Completed milestones: expanding whiteboards, voice amendments to existing objects, and the full-screen floating-control workspace. Plugin schema/registry, renderer/motion and library/editor changes are integrated; no active agent file ownership remains. See the latest voice-amendments evidence below.
 
@@ -236,3 +236,50 @@ Canvas fixes: resuming a paused draw no longer replays already-finished cell ani
 Verification after the changes: `pnpm typecheck` passed; `pnpm test` 93 passed (four new session regressions, one new app-origin test, one new math grammar test); `pnpm test:e2e` 23 passed on isolated 5174/3002; `pnpm build` passed with the existing bundle-size warning; `pnpm check:hackathon` passed. Live hosted ASR/Nemotron were not re-run for these fixes.
 
 Not changed, by decision or restriction: an automatic same-host origin allowance for the self-served built app was proposed to simplify Docker/Railway hosting but not applied; deployments must set `ALLOWED_ORIGINS` explicitly. Stale `.data/e2e-*.json` artifacts from before isolated test storage remain and can be deleted. Unverified low-priority notes from the reviews: Riva result ordering `[partial, final]` in one response would be treated as partial; object drag captures camera zoom at pointer-down, so an easing camera during a drag can lag the pointer; a trackpad wheel during an active pan ends the pan early.
+
+## Incremental AWS request-flow narration — 12 October 2026
+
+A bounded architecture planner and renderer support ordinary meeting clauses for client/API Gateway, Route 53 geographic/latency DNS policy, regional Application Load Balancer, EC2 Auto Scaling with a stated 5–12 capacity range running the application API, and PostgreSQL writer plus multiple unspecified read replicas. It uses bundled official AWS SVGs with provenance, stable IDs, incremental connections, playback queueing, cancellation/revision guards, and grouped undo. The caveat says routing policy and DNS health/latency signals do not guarantee the nearest region for every request; the graph distinguishes writes, replica reads, and replication. See `docs/NARRATED_LESSONS.md` for the exact unprefixed demo clauses.
+
+Local acceptance on the final geometry and scene-return behavior completed on 12 October. No provider calls were used in this acceptance, so it does not verify live Nemotron or natural microphone recognition for this feature. The parser vocabulary is bounded and does not infer arbitrary architecture narration.
+
+- `pnpm typecheck`: shared, server and web workspaces passed.
+- `pnpm test`: 126 tests passed across 15 files, including 14 architecture-planner/session tests.
+- `pnpm build`: passed. Existing bundle-size warning remains: main JS 907.47 kB and lazy ELK chunk 1,439.88 kB before gzip.
+- `pnpm exec playwright test tests/aws-architecture-lesson.spec.ts --workers=1 --output=/tmp/vizli-aws-qa-final --reporter=line`: 3 passed. The flow test covers all five ordinary clauses, clauses arriving during playback, stable object/edge IDs, replay idempotence, grouped undo, save/reload, official icon asset loading, honest range/replica counts, and unrelated-scene preservation. Cancellation coverage exercises explicit cancel, unrelated cue replacement, a manual edit, scene switch/re-entry, and later flow recovery. A separate blank finite-slide case checks placement and visibility.
+- `pnpm test:e2e --workers=1 --output=/tmp/vizli-aws-qa-full-e2e --reporter=line`: all 26 browser tests passed using isolated Demo services, with no paid provider calls.
+- CUA screenshot review at 1280×720 and default 100% camera: [whiteboard](screenshots/aws-architecture.png) and [blank architecture slide](screenshots/aws-architecture-slide.png). The compact two-row flow, Route 53 limitation note, PostgreSQL relationships and 5–12 capacity label are readable clear of the floating dock. Existing authored slide heading may still sit partly behind the top-left floating controls; the architecture flow itself is below that title band.
+
+The supported user story is available in [NARRATED_LESSONS.md](NARRATED_LESSONS.md). The ordinary meeting clauses need no “draw” or “add” prefix. The EC2 capacity is a configured 5–12 range, not a live instance count; “multiple” replicas carries no invented count. Route 53 uses configured geographic/latency DNS policy and health signals as best effort, with no guarantee of the nearest region per request. PostgreSQL write, replica-read, and writer-to-replica relationships are shown separately. General architecture narration, deployed-resource discovery, live ASR, and live Nemotron accuracy remain unverified.
+
+## Nemotron-first tiering, lesson author and Nebius deployment path — 12 October 2026
+
+Why: the hackathon rubric scores "how effectively does it use Nebius Token Factory" and "a creative, non-obvious use of ... NVIDIA Nemotron". Before this change the live resolver tried seven deterministic layers before calling Nemotron, so the headline matrix lesson never reached Token Factory.
+
+What changed:
+
+- **Tiered Nemotron configuration** (`apps/server/src/config.ts`, `.env.example`): fast `NEBIUS_FAST_MODEL` (Nemotron 3 Nano), core `NEBIUS_MODEL` (Nemotron 3 Super), reasoning `NEBIUS_REASONING_MODEL` (Nemotron 3 Ultra); every tier defaults to the core model. The account's `/v1/models` list exposes all three plus Nemotron 3.5 Lightning; tiny live completions returned HTTP 200 from each.
+- **Nemotron-first router** (`apps/server/src/intent.ts`): every final cue in live mode is classified by the fast tier under a strict JSON schema before any deterministic grounding; it chooses the first grounding tool, repairs transcripts, declines tentative speech and routes lesson requests. Partial speech and router failures keep the old deterministic order. The regex tentative/unsupported guard still runs first, which matters: in one benchmark run Nano classified "Maybe we could add a cache later" as `add`.
+- **Nemotron lesson author** (`apps/server/src/lessons.ts`): `lesson` intents with no built-in planner get a bounded plan from the reasoning tier (flat strict schema; half-filled steps are dropped; edges are deferred until both ends exist) compiled deterministically into validated presentation steps. Session `planning` state, 25-second budget, normal `sequence` dispatch.
+- **Honest provenance** (`ServedBySchema` in `packages/shared`): actions and skips carry provider, model, tier, planner, router decision and latency; the web activity log prints it ("Nemotron 3 Nano routed “attention” 1.1 s → grounded by explicit-target"). `/api/status` publishes the tier IDs and `routing`. The connections dialog lists the three tiers.
+- **Shared client** `apps/server/src/nebius.ts`; `pnpm check:hackathon` now checks all effective tiers; `pnpm bench:nebius` measures real latency per tier.
+- **Nebius-hosted deployment path** `deploy/nebius/` (script and README) for a Serverless AI Endpoint running the container; Dockerfile now starts `tsx` directly instead of `pnpm` (corepack re-downloaded pnpm at runtime under the `node` user).
+
+Verification (commands actually run):
+
+- `pnpm -r typecheck` pass; `pnpm --filter @vizli/server test`: 124 tests pass (new: `intent.test.ts`, `lessons.test.ts`, router cases in `resolver.test.ts`, authored-lesson cases in `session.test.ts`, tier cases in `hackathon.test.ts` and `app.test.ts`).
+- `pnpm build` pass (same bundle-size warning). `pnpm test:e2e`: 26 passed on the final run (an earlier run had 2 failures in `tests/aws-architecture-lesson.spec.ts` while that concurrent AWS architecture work was still being edited).
+- Live benchmark, `BENCH_RUNS=3 pnpm bench:nebius`, 33 billable calls from this machine on the evening of 12 October 2026 (AEDT), `https://api.tokenfactory.nebius.com/v1`:
+
+| Tier | Model | Calls | Failures | p50 | p95 | Max |
+| --- | --- | --- | --- | --- | --- | --- |
+| fast | `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B` | 15 | 0 | 1.13 s | 1.99 s | 2.44 s |
+| core | `nvidia/nemotron-3-super-120b-a12b` | 12 | 0 | 1.48 s | 1.55 s | 1.66 s |
+| reasoning | `nvidia/Nemotron-3-Ultra-550b-a55b` | 6 | 1 | 4.76 s | 5.53 s | 5.72 s |
+
+  Core outcomes were correct on all 12 calls (most-grown bar, most-customers bar, revenue edit, celebrated metric). Router intents were as expected except the hedged phrase noted above. The one reasoning failure was a plan cut short at 2,500 output tokens (7.1 s); the budget was raised to 4,000 afterwards and not re-benchmarked. An earlier run with every tier on Super measured fast 1.15 s / core 1.40 s / reasoning 3.56 s p50, with four of six lesson plans rejected before the normalizer learned to drop half-filled steps.
+- Docker: `docker build -t vizli:local .` succeeded (first local builds of the image). The runtime `CMD` was changed from `pnpm start` to `tsx` directly after the first container spent its startup downloading pnpm through corepack; the rebuilt container answered `/api/status` (demo mode), `/` and `/favicon.svg` with HTTP 200 on port 3011 and was stopped.
+- Live browser run through the real server on port 3005 (built web app, live keys): typed "Point to revenue" logged "Nemotron 3 Nano routed “attention” 1.5 s → Nemotron 3 Super on Nebius 1.8 s" and drew the pointer; on a fresh whiteboard, "Explain how DNS resolution works" went router 1.5 s → Nemotron 3 Ultra 2.8 s → a 17-step validated sequence (7 cards with connections) that played to completion. Screenshots: `docs/screenshots/nemotron-provenance.png`, `docs/screenshots/nemotron-lesson.png`. The first browser attempt showed no router entry because the router's 4-second budget expired on a cold call; the budget is now 6.5 s with a shorter output, and router fallbacks are logged server-side.
+- The saved default project received lesson objects and extra whiteboards during these runs; they were removed again through the project API (backup kept locally in the session scratchpad).
+
+Not verified: the Nebius endpoint creation itself (no `nebius` CLI on this machine), WebSocket upgrades through a managed endpoint URL, authored lessons through a real microphone, and tier behaviour under concurrent presenters.

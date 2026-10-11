@@ -1,6 +1,6 @@
 # Narrated presentations and lesson execution
 
-Status: implemented and verified locally, 10 October 2026.
+Status: matrix lesson verified locally on 10 October 2026; bounded AWS request-flow added 12 October 2026. Current local browser acceptance is recorded in `docs/STATUS.md`.
 
 ## Acceptance story
 
@@ -38,7 +38,23 @@ Partial speech may guide attention, but never commits newly introduced objects o
 
 ## Reuse beyond maths
 
-A UML planner could introduce a class, reveal methods one by one and highlight a method. An architecture planner could introduce services, pan to another area and trace a request path. Both should emit the same insertion, attention, camera, reveal and wait steps. Only object schemas, semantic target enumeration and domain planning differ.
+A UML planner could introduce a class, reveal methods one by one and highlight a method. The bounded AWS request-flow planner is now an implemented example: it incrementally introduces services and edges while reusing the same insertion, attention, and wait steps. Only object schemas, semantic target enumeration and domain planning differ.
+
+### AWS request-flow demo
+
+On a new architecture whiteboard or blank architecture slide, speak or type these as ordinary meeting clauses. No “draw”, “add”, or other command prefix is required:
+
+1. “A client calls the API Gateway.”
+2. “Route 53 uses latency and geographic routing to choose the nearest region.”
+3. “The regional API sends the request to an Application Load Balancer.”
+4. “It spreads traffic across 5–12 EC2 nodes in an Auto Scaling group running our application API.”
+5. “The service writes to a PostgreSQL primary writer and reads from multiple read replicas.”
+
+Each finalized clause adds only newly grounded objects and connections; clauses may continue arriving while the previous insertion is playing. Stable IDs make replay idempotent, and the whole sequence is one undoable edit. Existing scene content is preserved. The planner skips ambiguous or unsupported details. It labels the EC2 capacity range as 5–12 nodes without claiming a current running count, and uses “multiple” replicas without inventing a replica count. The client is a generic editable node; AWS services use official bundled AWS symbols, including an Amazon EC2 Auto Scaling symbol for the capacity tier. Route 53 appears as a DNS policy relationship with a compact best-effort note. Configured geographic/latency DNS policies and health signals inform region selection; they do not guarantee the nearest region per request. The database labels identify PostgreSQL, distinguish the primary writer from read replicas, and show application reads plus replication separately.
+
+Reviewed screenshots at the default 100% camera are saved as [whiteboard](screenshots/aws-architecture.png) and [blank architecture slide](screenshots/aws-architecture-slide.png). Both show the two-row flow clear of the floating dock; the note and bounded capacity labels remain legible.
+
+This deterministic planner supports these bounded phrase patterns and close variants covered by its parser tests. It is not arbitrary speech-to-diagram inference, AWS account discovery, infrastructure validation, or proof that the depicted topology is deployed. General interpretation remains on the configured Nemotron path, but no live Nemotron or microphone accuracy claim is made by this local browser acceptance.
 
 ## Limits to communicate
 
@@ -48,6 +64,7 @@ Writing uses progressive glyph/content reveal and outline tracing, not inferred 
 
 - Shared/server: dimensions and ASR variants, split finals, idempotence, symbolic and numeric dot products, invalid dimensions, colour safety, final-only mutation and stale plan rejection.
 - Browser: spoken-text-equivalent cues through the real isolated demo pipeline, progressive insertion, exact row/column targets, coloured highlighting, smooth camera pan, one-by-one calculations, cancellation and persistence.
+- AWS: all five unprefixed clauses, rapid finalized clauses during playback, stable object/edge identity, replay idempotence, preservation of unrelated scene content, grouped undo, save/reload, real cancellation, unsupported/unrelated cue replacement, and blank-slide/whiteboard layout at normal camera settings. Verify bounded 5–12 capacity and unspecified plural replicas, plus official SVG assets.
 - Renderer: no first-frame flash, no camera snapping during voice navigation, reduced-motion support and correct completion/cancellation callbacks.
 - Live smoke: hosted ASR for representative phrases if available, without treating deterministic/browser checks as evidence of live model accuracy.
 
@@ -93,4 +110,17 @@ Allow each declaration to finish drawing before the next cue during a demonstrat
 - Canvas CUA review used an isolated fixture produced by the real domain planner. Matrix rows/columns, simultaneous highlights, symbolic subscripts, current equation and result matrix were checked. Layout was compacted to keep the result above the voice dock at a typical desktop viewport. Temporary fixtures were removed.
 - Live smoke artifacts remain ignored under `.data/verification/`: `check-narrated-lesson.mjs` and `lesson-*.wav`. They contain synthetic demo speech, no credentials and no user project writes.
 
+- AWS request-flow acceptance on 12 October: `pnpm exec playwright test tests/aws-architecture-lesson.spec.ts --workers=1 --output=/tmp/vizli-aws-qa-final --reporter=line` passed 3 tests; `pnpm test:e2e --workers=1 --output=/tmp/vizli-aws-qa-full-e2e --reporter=line` passed all 26 browser tests; `pnpm typecheck` passed; `pnpm test` passed 126 tests; `pnpm build` passed with the existing bundle-size warning. These tests use isolated Demo services and typed equivalents of the five clauses; no paid provider calls were made. Screenshots at the default camera are linked above. This does not verify live Nemotron interpretation or natural microphone recognition for the AWS phrases.
+
 The browser's microphone capture path was already implemented; this milestone verified hosted transcription using synthetic audio, not a fresh recording of the user's microphone. General Nemotron interpretation remains configured, but these known lesson commands use the deterministic domain planner.
+
+## Nemotron-authored lessons (12 October 2026)
+
+Topics without a hand-written planner now get a lesson from the Nemotron reasoning tier on Nebius Token Factory (`apps/server/src/lessons.ts`). The flow keeps the segregation above:
+
+1. The fast tier classifies the final utterance as a `lesson` intent (`apps/server/src/intent.ts`). Deterministic planners such as the matrix lesson still run first; only unmatched lesson requests go to the author.
+2. The reasoning tier returns a bounded plan under a strict JSON schema: `introduce` cards (slug, label, short text), `connect` edges and `emphasize` steps, at most 24 steps. Nothing in the plan is executable, and the request is treated as untrusted content.
+3. The server compiles the plan deterministically into the shared presentation language: progressive `insert` steps with draw entrances in a card grid below the current view, deferred `insert` connections once both ends exist, `attention` steps, and a `context` step with domain `nemotron.lesson`. Steps that reference unknown slugs or leave their own fields empty are dropped, the sequence is capped at 60 steps, and `validatePresentationSequence` simulates it against the current scene before playback.
+4. The session runs this in the `planning` state with the 25-second budget, dispatches a normal `sequence` action, and records `served` metadata naming the router model and the author model with latency. Partial speech never authors; repeating the same request on a scene that already holds that lesson skips.
+
+Limits: cards are generic nodes (no icons or plugin parts), placement is a fixed three-column grid, and the author does not compute anything. Two topics (DNS resolution, load balancing) were authored live through Nemotron 3 Ultra and Nemotron 3 Super during the 12 October benchmark; browser playback of an authored lesson used the shared player only through unit coverage of the compiled sequence, not a recorded microphone run.
