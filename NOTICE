@@ -1,0 +1,13 @@
+Vizli
+Copyright 2026 Rishul Matta
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not
+use this project except in compliance with the License. You may obtain a copy
+of the License at http://www.apache.org/licenses/LICENSE-2.0 or in the LICENSE
+file in this repository.
+
+Third-party notices:
+- apps/server/vendor/nvidia-riva contains unmodified NVIDIA Riva protocol
+  definitions under the MIT License, with inherited Google Apache-2.0 notices;
+  see the LICENSE files in that directory.
+- npm dependencies are governed by their respective package licenses.

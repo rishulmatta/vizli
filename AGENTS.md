@@ -19,7 +19,7 @@
 - Ambiguous automatic cues skip. Rendered effects must be cancellable and have bounded lifetimes.
 - Demo mode must be labelled; it is not live model inference. Configured providers must use actual runtime APIs.
 - Hackathon target is Best Apps and Agents: core visual interpretation/planning must use NVIDIA Nemotron on Nebius Token Factory. NVIDIA-hosted ASR is supplementary and does not replace this requirement. Do not change the primary model/provider without checking `docs/HACKATHON.md`. Run `pnpm check:hackathon` before deployment/submission and separately verify live inference; a configuration check is not proof of eligibility.
-- Do not deploy or publish unless requested. The public repository is https://github.com/rishulmatta/vizli under the PolyForm Noncommercial 1.0.0 license (free noncommercial use; commercial use needs the owner's permission); commit when the user asks and never commit `.env` or `.data`.
+- Do not deploy or publish unless requested. The public repository is https://github.com/rishulmatta/vizli under the Apache-2.0 license, chosen on 11 October 2026 to satisfy the hackathon rule that the repository carry a detectable open-source license; keep LICENSE/NOTICE intact. Commit when the user asks and never commit `.env` or `.data`.
 - Test meaningful state transitions, stale-result cancellation, API validation, and core browser workflows.
 
 ## Development

@@ -2,6 +2,17 @@
 
 A visual presentation studio that follows your explanation. Prepare editable scenes, rehearse cues, and point, highlight, reveal, or animate objects as you speak.
 
+## How Vizli uses NVIDIA Nemotron and Nebius Token Factory
+
+Built for the Nebius x NVIDIA Global AI Hackathon, **Best Apps and Agents** track. Project work began in October 2026, inside the submission period.
+
+- **Core reasoning: NVIDIA Nemotron 3 Super (`nvidia/nemotron-3-super-120b-a12b`) on Nebius Token Factory.** Every live spoken or typed instruction is sent to the Token Factory chat-completions API (`apps/server/src/resolver.ts`). Nemotron receives the current scene's objects, semantic parts and plugin capabilities and returns a strict JSON-Schema action: point, highlight, reveal, animate, navigate, move, add a component, retrieve an image, or edit an existing object. The server validates the proposal against the live scene revision before anything renders. Thinking is switched off for these fast calls through `chat_template_kwargs.enable_thinking=false`.
+- **Scene and illustration planning: the same Nemotron model through Token Factory** (`apps/server/src/generate.ts`). "Create from an idea" and spoken "Draw a software architecture" requests ask Nemotron for a complete validated scene of editable objects and connections, which is appended to the whiteboard.
+- **Speech: NVIDIA-hosted Nemotron ASR** (`apps/server/src/speech.ts`) streams microphone PCM over TLS gRPC and returns partial and final transcripts that feed the Nemotron interpreter above.
+- **What is deterministic:** Wikimedia image search, whiteboard navigation phrases and the matrix-multiplication lesson planner are rule-based and are labelled as such. Without credentials the app runs in a clearly labelled demo mode that performs no model inference.
+
+Live verification of the Token Factory path (scene generation, cue interpretation and hosted ASR → Nemotron → visual action) is recorded in [docs/STATUS.md](docs/STATUS.md); `pnpm check:hackathon` audits the configuration locally.
+
 ## Run locally
 
 Requirements: Node.js 24 or newer and pnpm 12.
@@ -83,7 +94,7 @@ This is initially a local single-user application. Supabase cloud rows have owne
 
 ## License
 
-Vizli is released under the [PolyForm Noncommercial License 1.0.0](LICENSE). Anyone may use, copy, modify and share it free of charge for noncommercial purposes. Commercial use of any kind needs written permission from the copyright holder; open a GitHub issue to ask. This is a source-available noncommercial license, not an OSI-approved open-source license. Vendored NVIDIA Riva protocol files keep their MIT/Apache-2.0 licenses.
+Vizli is released under the [Apache License 2.0](LICENSE); see [NOTICE](NOTICE) for attribution and third-party notices. Vendored NVIDIA Riva protocol files keep their MIT/Apache-2.0 licenses.
 
 JSON project import/export is the editable interchange format. Arbitrary PowerPoint/PDF reconstruction, symbolic mathematics, and automatic editable decomposition of raster images are separate work.
 

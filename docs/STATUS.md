@@ -94,7 +94,7 @@ Nebius credentials are now configured locally (see the live verification below).
 - Images are URLs or embedded data. Supabase Storage uploads, cloud merge/versioning/realtime collaboration are not implemented.
 - Spoken image placement currently searches Commons only and attaches to the center of one existing visible chart's x-axis. No chart or multiple charts produce a clarification message. Arbitrary web-wide retrieval, automatic axis creation, numeric x positions, choosing among candidates, background removal, asset caching/offline embedding, and named-chart disambiguation remain future work. Natural microphone accuracy remains unverified; typed cues and one hosted synthetic-speech-to-action workflow are verified.
 - Some ordinary property fields commit per keystroke; matrix/chart/scene metadata edits commit atomically.
-- External deployment and hackathon submission remain unperformed. The repository is public at https://github.com/rishulmatta/vizli under PolyForm Noncommercial 1.0.0 (11 October 2026); this is noncommercial source-available, not OSI open source, which the hackathon rules may require.
+- External deployment and hackathon submission remain unperformed. The repository is public at https://github.com/rishulmatta/vizli under Apache-2.0 (11 October 2026), as the official rules require an open-source license detectable on the repository page. See `docs/HACKATHON.md` for the clause-by-clause compliance checklist.
 
 ## How to resume
 

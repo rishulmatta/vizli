@@ -8,7 +8,7 @@ Checked 8 October 2026 (table refreshed 11 October 2026) against the [overview](
 | --- | --- | --- |
 | Use Nebius Token Factory or Nebius AI Cloud | Backend invokes Token Factory for transcript-to-action interpretation and scene generation | Live account execution verified 8 October 2026 (scene generation, cue interpretation, hosted ASR → Nemotron action); broad latency/quality still unmeasured |
 | Use NVIDIA open-source models; this track specifies Nemotron through Token Factory | `nvidia/nemotron-3-super-120b-a12b` for `NEBIUS_MODEL`; optional `NEBIUS_PLANNING_MODEL` override | Model ID confirmed against the account with real HTTP 200 completions; `pnpm check:hackathon` passes locally |
-| Working user-facing app | Editable slides and expanding whiteboards, voice amendments, domain plugins and narrated lessons with hosted speech and typed cues | Local browser and backend suites pass; public repository published 11 October 2026 under PolyForm Noncommercial 1.0.0; deployment and submission still pending |
+| Working user-facing app | Editable slides and expanding whiteboards, voice amendments, domain plugins and narrated lessons with hosted speech and typed cues | Local browser and backend suites pass; public repository published 11 October 2026 under Apache-2.0; deployment, video and submission still pending |
 | Nebius Serverless Endpoints/Jobs | Optional future deployment path | Encouraged by track, not mandatory |
 
 NVIDIA-hosted Nemotron ASR is an additional speech service, not the evidence for running on Nebius. Keep the core agent on Nebius Token Factory even when speech comes from NVIDIA. Vercel/Railway can host the frontend/backend under this architecture; the required AI execution is supplied by Token Factory. This is our reading of the published track requirements, not an organizer eligibility decision.
@@ -34,13 +34,27 @@ Keep core Nemotron use meaningful: contextual reference resolution, validated vi
 
 The selected initial model is **Nemotron 3 Super**, `nvidia/nemotron-3-super-120b-a12b`, for both cue interpretation and scene planning. The ID is documented in [Nebius's official model cookbook](https://github.com/nebius/token-factory-cookbook/blob/main/models/nemotron/nemotron3-super-120B.md); it is populated in `.env.example` and now activated in the private local environment. Live scene generation and cue interpretation have been verified with the account; broader latency and quality evaluation remains pending. The earlier Nano-for-cues/Super-for-planning split is deferred to avoid unmeasured routing complexity. A larger planning model remains optional; the track's Ultra suggestion does not mean every request must use Ultra. Current `NEBIUS_MODEL` configuration is flexible and does not itself enforce vendor/model identity.
 
-## Before claiming submission readiness
+## Compliance checklist against the Official Rules — 11 October 2026
 
-1. Configure server-only NVIDIA and Nebius credentials and exact account-supported Nemotron model IDs.
-2. Verify an actual NVIDIA streaming session with partial/final transcripts, then verify a meaningful visual action and scene generation through Token Factory. Typed fallback and deterministic image search alone are insufficient evidence of the core agent.
-   Fast Nemotron cue interpretation now uses a 1,024-token cap and verified thinking-off controls (`extra_body.chat_template_kwargs.enable_thinking=false`); scene planning retains its 5,000-token budget and reasoning defaults. Cue output uses provider-enforced strict JSON Schema. Optional nulls are normalized before semantic validation. Malformed speculative speech waits for the final phrase; completed malformed/truncated responses produce readable errors without hidden demo fallback or automatic paid retries.
-3. Record sanitized model IDs/provider request evidence without API keys, raw private audio, or private transcripts. Test model failures and reconnects.
-4. Deploy a usable public demo with isolated guest projects; provide clear microphone/typed-cue instructions.
-5. Prepare a public repository, owner-approved open-source license, setup README, project description, a public demo video no longer than three minutes, and requested platform feedback. The repository is public with a PolyForm Noncommercial 1.0.0 license chosen by the owner on 11 October 2026. That license is source-available, not OSI-approved open source; confirm with the organizers whether it satisfies the published "open-source license" requirement before submitting, or be prepared to relicense.
+Checked against the official rules page (loaded in a real browser on 11 October 2026; Devpost blocks plain HTTP clients). Submission Period: 26 August 2026 09:00 PT to 30 October 2026 10:00 PT. Judging Period: 1 to 15 December 2026. Winners announced on or around 11 January 2027.
 
-Live provider success is now verified: Nemotron scene generation and cue interpretation on Nebius, and NVIDIA hosted ASR streaming a synthetic recording through to a visual action. Both server-only credentials are configured and the configuration preflight passes. Public deployment and hackathon submission remain unperformed; the repository and license exist as of 11 October 2026. See `docs/STATUS.md` for exact evidence and limits.
+| Rule (quoted or paraphrased) | Vizli status |
+| --- | --- |
+| "runs on either Nebius Token Factory or Nebius AI Cloud", defined as "a runtime call to the Token Factory inference API" | Met. Live cue interpretation and scene planning call Token Factory chat completions at runtime; verified with real HTTP 200 responses (STATUS.md). |
+| "uses at least one NVIDIA open source model" | Met. `nvidia/nemotron-3-super-120b-a12b` (Nemotron 3 Super) on Token Factory; NVIDIA-hosted Nemotron ASR is additional. |
+| Fits one track; Best Apps and Agents: "Power it with Nemotron models on Nebius through Token Factory" | Met. Submit under Best Apps and Agents. Serverless Endpoints/Jobs are "encouraged" and "neither is required". |
+| "capable of being successfully installed and running consistently" and "function as depicted in the video" | Met locally: README setup, typecheck, 93 backend and 23 browser tests pass. Keep the video honest about demo versus live mode. |
+| New & Existing: created or significantly updated inside the Submission Period | Met. Work began in October 2026; no pre-existing-project explanation is needed. |
+| Third-party integrations used in accordance with their terms | Met as far as known: Nebius Token Factory and NVIDIA NIM under their API terms, Wikimedia Commons public API with attribution, vendored Riva protos under MIT/Apache-2.0. |
+| "URL to a working demo, hosted application, or test build" available "free of charge and without any restriction" until the Judging Period ends (15 December 2026) | **Not met yet.** No public deployment exists. Deploy (planned Vercel + Railway) with server-only credentials, guest access and the usage limits in place, and keep it running through 15 December 2026. |
+| Public repository on GitHub/GitLab/Bitbucket with "all necessary source code, assets, and instructions" | Met: https://github.com/rishulmatta/vizli. |
+| "must be public and open source by including an open source license file (such as Apache 2.0, MIT, or MPL 2.0) ... detectable and visible at the top of the repository page" | Met as of 11 October 2026: Apache-2.0 `LICENSE` plus `NOTICE`; GitHub detects it in the About section. The earlier PolyForm Noncommercial license was replaced because it is not open source. |
+| README with setup instructions | Met. |
+| "highlight how you've used NVIDIA Nemotron ... and where Token Factory accelerated your workflow" | Met. README opens with a dedicated section; this document and STATUS.md give the evidence. Repeat it in the Devpost description. |
+| Demo video: under three minutes, shows the project functioning, public on YouTube, "must not include third party trademarks, or copyrighted music" | **Not done.** Record the narrated lesson and marketing cue flows with original or licensed audio only; narrate how Token Factory and Nemotron are used. |
+| Text description of features and functionality | **Not done.** Write on the Devpost form. |
+| Feedback on Token Factory, AI Cloud and NVIDIA tools | **Not done.** Candidate notes are in STATUS.md: thinking-off controls, strict JSON Schema output, 12-second cue latency ceiling, ASR final/partial semantics. |
+| Submission "original work ... solely owned" by the entrant; no Sponsor/Administrator financial support | Met. |
+| All materials in English | Met. |
+
+Remaining actions before submitting: public deployment with a stable URL, the YouTube video, the Devpost description and feedback fields, and a final `pnpm check:hackathon` plus a live cue through the deployed app.
