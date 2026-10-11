@@ -1,0 +1,236 @@
+.viz-cloud-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid #dce4d9;
+  border-radius: 7px;
+  background: #fcfcf7;
+  padding: 8px 11px;
+  color: #365942;
+  font:
+    500 12px Inter,
+    Arial,
+    sans-serif;
+  cursor: pointer;
+}
+.viz-cloud-trigger i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #6d9f66;
+}
+.viz-cloud-dialog {
+  border: 1px solid #dfe5d8;
+  border-radius: 15px;
+  padding: 0;
+  width: min(560px, calc(100vw - 32px));
+  max-height: 85vh;
+  overflow: auto;
+  color: #284733;
+  background: #fcfcf8;
+  box-shadow: 0 30px 120px #0d2e3455;
+}
+.viz-cloud-dialog::backdrop {
+  background: #173a3066;
+  backdrop-filter: blur(5px);
+}
+.viz-cloud-body {
+  padding: 30px;
+  font:
+    14px/1.6 Inter,
+    Arial,
+    sans-serif;
+}
+.viz-cloud-body header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+}
+.viz-cloud-body h2 {
+  font:
+    32px Georgia,
+    serif;
+  margin: 7px 0;
+}
+.viz-cloud-kicker {
+  font-size: 9px;
+  letter-spacing: 2px;
+  color: #83947c;
+}
+.viz-cloud-body button {
+  cursor: pointer;
+}
+.viz-cloud-body button:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
+.viz-cloud-icon,
+.viz-cloud-list-title button {
+  background: none;
+  border: 0;
+  color: #647b63;
+  padding: 8px;
+}
+.viz-cloud-body p {
+  color: #74816e;
+}
+.viz-cloud-body label {
+  display: block;
+  font-size: 12px;
+  margin: 20px 0 7px;
+}
+.viz-cloud-body input {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 12px;
+  border: 1px solid #d3decd;
+  border-radius: 7px;
+  background: white;
+  color: #284733;
+  font: inherit;
+}
+.viz-cloud-primary {
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  gap: 8px;
+  background: #294f3a;
+  border: 1px solid #294f3a;
+  border-radius: 7px;
+  color: #fff;
+  padding: 10px 14px;
+  font:
+    500 12px Inter,
+    Arial,
+    sans-serif;
+  white-space: nowrap;
+}
+.viz-cloud-body form > .viz-cloud-primary {
+  margin-top: 15px;
+  width: 100%;
+}
+.viz-cloud-account {
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+  color: #6c7f66;
+}
+.viz-cloud-account > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.viz-cloud-account button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: 0;
+  white-space: nowrap;
+  color: #687e63;
+}
+.viz-cloud-save {
+  margin: 22px 0;
+  padding: 18px;
+  background: #f0f4e9;
+  border: 1px solid #e0e8d7;
+  border-radius: 9px;
+  display: flex;
+  gap: 15px;
+  align-items: center;
+  justify-content: space-between;
+}
+.viz-cloud-save small,
+.viz-cloud-projects small {
+  display: block;
+  font-size: 11px;
+  color: #829078;
+  margin-top: 5px;
+}
+.viz-cloud-list-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.viz-cloud-list-title h3 {
+  font-size: 13px;
+  font-weight: 600;
+  margin: 0;
+}
+.viz-cloud-hint {
+  font-size: 11px;
+  margin-top: 5px;
+}
+.viz-cloud-projects {
+  display: grid;
+  gap: 7px;
+  max-height: 270px;
+  overflow: auto;
+}
+.viz-cloud-projects > button {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  text-align: left;
+  background: white;
+  border: 1px solid #e3e8dc;
+  border-radius: 7px;
+  padding: 12px;
+  color: #35523c;
+  font:
+    12px Inter,
+    Arial,
+    sans-serif;
+}
+.viz-cloud-projects > button > span:last-child {
+  white-space: nowrap;
+  font-size: 11px;
+  color: #819675;
+}
+.viz-cloud-projects p {
+  font-size: 12px;
+  background: #f4f5ef;
+  padding: 20px;
+  text-align: center;
+  border-radius: 7px;
+}
+.viz-cloud-status {
+  padding: 12px;
+  margin-top: 15px;
+  background: #eef3e8;
+  border: 1px solid #dee7d5;
+  border-radius: 7px;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.viz-cloud-config {
+  padding: 20px;
+  background: #f0f4e9;
+  border-radius: 10px;
+  color: #6f8967;
+}
+.viz-cloud-config h3 {
+  font:
+    20px Georgia,
+    serif;
+  color: #365942;
+}
+.viz-cloud-config p {
+  font-size: 12px;
+}
+.viz-cloud-config code {
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 480px) {
+  .viz-cloud-body {
+    padding: 20px;
+  }
+  .viz-cloud-save {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}

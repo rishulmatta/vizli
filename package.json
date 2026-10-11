@@ -1,0 +1,21 @@
+{
+  "name": "vizli",
+  "private": true,
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "version": "0.1.0",
+  "packageManager": "pnpm@12.6.0",
+  "scripts": {
+    "dev": "concurrently -n server,web -c green,cyan \"pnpm --filter @vizli/server dev\" \"pnpm --filter @vizli/web dev\"",
+    "build": "pnpm --filter @vizli/shared build && pnpm --filter @vizli/web build && pnpm --filter @vizli/server build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r --if-present test",
+    "test:e2e": "playwright test",
+    "start": "pnpm --filter @vizli/server start",
+    "check:hackathon": "pnpm --filter @vizli/server exec tsx src/check-hackathon.ts"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.56.0",
+    "concurrently": "^9.2.1",
+    "typescript": "^5.9.3"
+  }
+}

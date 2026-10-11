@@ -1,0 +1,521 @@
+.viz-canvas-shell {
+  width: 100%;
+  aspect-ratio: 16/9;
+  position: relative;
+  overflow: hidden;
+  background: #fcfcf8;
+  border: 1px solid #dfe5db;
+  border-radius: 10px;
+  box-shadow: 0 8px 35px #233f2f09;
+  isolation: isolate;
+}
+.viz-scene-stage {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1200px;
+  height: 675px;
+  transform-origin: top left;
+  overflow: hidden;
+  color: #243f32;
+  font-family: Inter, Arial, sans-serif;
+  background: #fcfcf8;
+}
+.viz-scene-decoration {
+  position: absolute;
+  right: -110px;
+  top: -165px;
+  width: 490px;
+  height: 490px;
+  border-radius: 50%;
+  border: 1px solid #dfe8d9;
+  box-shadow:
+    0 0 0 55px #eef2e74f,
+    0 0 0 110px #f3f5ed66;
+  pointer-events: none;
+}
+.viz-scene-header {
+  position: absolute;
+  left: 60px;
+  top: 43px;
+  right: 60px;
+  pointer-events: none;
+  z-index: 2;
+}
+.viz-scene-kicker {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 10px;
+  letter-spacing: 2px;
+  font-weight: 600;
+  color: #6a806d;
+}
+.viz-scene-kicker > span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #8ba671;
+}
+.viz-scene-header h1 {
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 45px;
+  line-height: 1.15;
+  font-weight: 400;
+  letter-spacing: -1.6px;
+  margin: 15px 0 10px;
+  color: #213e30;
+}
+.viz-scene-header p {
+  font-size: 14px;
+  line-height: 1.6;
+  color: #7a857b;
+  margin: 0;
+  max-width: 850px;
+}
+.viz-object {
+  position: absolute;
+  box-sizing: border-box;
+  touch-action: none;
+  z-index: 3;
+  border-radius: 9px;
+}
+.is-editable .viz-object {
+  cursor: grab;
+}
+.is-editable .viz-object:active {
+  cursor: grabbing;
+}
+.viz-object.is-selected {
+  outline: 2px solid #649b7b;
+  outline-offset: 5px;
+}
+.viz-object.is-hidden {
+  opacity: 0.32;
+}
+.viz-hidden-badge {
+  position: absolute;
+  top: -18px;
+  right: 0;
+  background: #eceee3;
+  font-size: 9px;
+  padding: 3px 6px;
+  border-radius: 3px;
+}
+.viz-selection-tag {
+  position: absolute;
+  left: -7px;
+  top: -24px;
+  background: #356e50;
+  color: white;
+  font-size: 10px;
+  padding: 3px 7px;
+  border-radius: 3px;
+  text-transform: capitalize;
+}
+.viz-resize-handle {
+  position: absolute;
+  right: -11px;
+  bottom: -11px;
+  width: 12px;
+  height: 12px;
+  border: 2px solid #356e50;
+  background: white;
+  border-radius: 3px;
+  cursor: nwse-resize;
+  touch-action: none;
+}
+.viz-object-eyebrow {
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 1.5px;
+  line-height: 1.4;
+  color: #718474;
+  font-weight: 600;
+}
+.viz-metric {
+  padding: 24px;
+  height: 100%;
+  box-sizing: border-box;
+  background: #f0f3e9;
+  border: 1px solid #e2e8d9;
+  border-radius: 10px;
+  overflow: hidden;
+}
+.viz-metric-value {
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 64px;
+  letter-spacing: -2px;
+  line-height: 1.2;
+  margin-top: 15px;
+  color: #284d3b;
+  white-space: nowrap;
+}
+.viz-metric-note {
+  font-size: 12px;
+  color: #6f8171;
+  margin-top: 12px;
+  line-height: 1.5;
+}
+.viz-chart {
+  height: 100%;
+  padding-top: 12px;
+  box-sizing: border-box;
+}
+.viz-chart > .viz-object-eyebrow {
+  padding-left: 24px;
+  margin-bottom: 6px;
+}
+.viz-chart-value {
+  font:
+    600 13px Inter,
+    Arial,
+    sans-serif;
+  fill: #355343;
+}
+.viz-chart-label {
+  font:
+    11px Inter,
+    Arial,
+    sans-serif;
+  fill: #7b897e;
+}
+.viz-text {
+  height: 100%;
+  padding: 12px 4px;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+.viz-text-title {
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 27px;
+  line-height: 1.25;
+  margin-bottom: 12px;
+}
+.viz-text-body {
+  font-size: 16px;
+  line-height: 1.7;
+  color: #6d7f71;
+  white-space: pre-wrap;
+}
+.viz-text > .katex {
+  font-size: 1.65em;
+}
+.viz-matrix {
+  height: 100%;
+  box-sizing: border-box;
+  padding: 25px 30px;
+  background: #f1f4ec;
+  border: 1px solid #e1e8da;
+  border-radius: 12px;
+  overflow: hidden;
+}
+.viz-matrix-equation {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 25px;
+  height: calc(100% - 45px);
+  min-height: 70px;
+}
+.viz-matrix-name {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  font:
+    italic 28px Georgia,
+    serif;
+}
+.viz-matrix-brackets {
+  position: relative;
+  padding: 8px 16px;
+  min-width: 100px;
+  max-width: 75%;
+  border-left: 2px solid #365c45;
+  border-right: 2px solid #365c45;
+}
+.viz-matrix-brackets:before,
+.viz-matrix-brackets:after {
+  content: "";
+  position: absolute;
+  left: -2px;
+  right: -2px;
+  height: 7px;
+  border-left: 12px solid #365c45;
+  border-right: 12px solid #365c45;
+  pointer-events: none;
+}
+.viz-matrix-brackets:before {
+  top: 0;
+  height: 2px;
+}
+.viz-matrix-brackets:after {
+  bottom: 0;
+  height: 2px;
+}
+.viz-matrix-row {
+  display: grid;
+  gap: 12px;
+  border-radius: 5px;
+}
+.viz-matrix-cell {
+  min-width: 35px;
+  text-align: center;
+  padding: 9px;
+  font:
+    27px Georgia,
+    serif;
+  line-height: 1.2;
+  border-radius: 5px;
+}
+.viz-matrix-note {
+  text-align: center;
+  font-size: 12px;
+  color: #798779;
+}
+.viz-image-content {
+  width: 100%;
+  height: 100%;
+  border-radius: 10px;
+  overflow: hidden;
+  position: relative;
+  background: #edf0e7;
+}
+.viz-image-content img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: center bottom;
+  display: block;
+  pointer-events: none;
+}
+.viz-image-caption {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 25px 18px 15px;
+  color: white;
+  background: linear-gradient(transparent, #152f28b3);
+  font-size: 13px;
+}
+.viz-image-fallback {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 10px;
+  color: #69816f;
+  text-align: center;
+  padding: 15px;
+  box-sizing: border-box;
+}
+.viz-image-fallback > span {
+  font-size: 35px;
+}
+.viz-image-fallback small {
+  font-size: 11px;
+}
+.viz-attention-layer {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 6;
+  overflow: visible;
+}
+.viz-highlight-ring {
+  animation: viz-attention-in 0.2s ease-out;
+}
+.viz-pointer {
+  filter: drop-shadow(0 2px 3px #8c292b22);
+}
+.viz-scene-footer {
+  position: absolute;
+  left: 60px;
+  right: 60px;
+  bottom: 23px;
+  padding-top: 14px;
+  border-top: 1px solid #e1e7db;
+  display: flex;
+  justify-content: space-between;
+  font-size: 9px;
+  letter-spacing: 1.6px;
+  color: #8c9989;
+  z-index: 2;
+  pointer-events: none;
+}
+.viz-scene-footer i {
+  font-style: normal;
+  margin: 0 7px;
+  color: #b9c5b2;
+}
+.viz-graph-surface {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+}
+.viz-graph-surface .react-flow__background {
+  opacity: 0.45;
+}
+.viz-graph-node {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  flex-direction: column;
+  gap: 10px;
+  box-sizing: border-box;
+  padding: 22px;
+  background: #fcfdf9;
+  border: 1px solid #d9e3d6;
+  border-top: 3px solid #355e4b;
+  border-radius: 10px;
+  box-shadow: 0 5px 15px #243f3208;
+}
+.viz-graph-node.is-selected {
+  outline: 2px solid #649b7b;
+  outline-offset: 5px;
+}
+.viz-node-icon {
+  font-size: 22px;
+  color: #779573;
+}
+.viz-graph-node strong,
+.viz-node-inline strong {
+  font-size: 16px;
+  font-weight: 600;
+}
+.viz-graph-node > span:last-of-type,
+.viz-node-inline > span:last-of-type {
+  font-size: 12px;
+  line-height: 1.4;
+  color: #7e8c7f;
+}
+.viz-graph-node .react-flow__handle {
+  background: #83a085;
+  border: 3px solid #fcfcf8;
+  width: 8px;
+  height: 8px;
+}
+.is-presenting .react-flow__handle {
+  visibility: hidden;
+}
+.viz-node-inline {
+  height: 100%;
+  padding: 18px;
+  display: flex;
+  gap: 10px;
+  flex-direction: column;
+  background: #eff4e9;
+  border: 1px solid #dbe6d7;
+  border-radius: 10px;
+  box-sizing: border-box;
+}
+.viz-arrange {
+  position: absolute;
+  right: 60px;
+  top: 95px;
+  z-index: 5;
+  background: #f2f5ec;
+  border: 1px solid #dbe5d5;
+  border-radius: 6px;
+  padding: 9px 13px;
+  color: #56735b;
+  font:
+    12px Inter,
+    Arial,
+    sans-serif;
+  cursor: pointer;
+}
+.viz-arrange:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
+.viz-layout-error {
+  position: absolute;
+  bottom: 52px;
+  right: 60px;
+  z-index: 6;
+  font-size: 12px;
+  background: #fff0e6;
+  padding: 10px;
+  border-radius: 5px;
+  color: #894938;
+}
+@keyframes viz-attention-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .viz-highlight-ring {
+    animation: none;
+  }
+  .react-flow__edge-path {
+    animation: none !important;
+  }
+}
+.viz-text.is-compact {
+  font-size: 15px;
+  line-height: 1.5;
+  padding: 8px 4px;
+  color: #75867c;
+}
+.viz-text.is-symbol {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font:
+    50px Georgia,
+    serif;
+  padding: 0;
+}
+.viz-metric {
+  padding: 20px 24px;
+}
+.viz-metric-value {
+  font-size: 58px;
+  line-height: 1.1;
+  margin-top: 10px;
+}
+.viz-metric-note {
+  margin-top: 8px;
+}
+.viz-graph-node {
+  padding: 16px 22px;
+  gap: 7px;
+}
+.viz-graph-node .viz-node-icon {
+  font-size: 18px;
+}
+
+/* Keep chart geometry identical to the shared image anchoring contract. */
+.viz-chart {
+  position: relative;
+}
+.viz-chart-svg {
+  position: absolute;
+  left: 0;
+  top: 44px;
+  display: block;
+}
+.viz-image-content.is-anchored {
+  background: transparent;
+  border-radius: 0;
+}
+.viz-board-world{position:absolute;inset:0;transform-origin:top left;pointer-events:none}.viz-board-world>.viz-object{pointer-events:auto}.viz-board-backdrop{position:absolute;inset:0;width:1200px;height:675px;pointer-events:none;overflow:hidden}.viz-board-area-label{font:600 12px Inter,Arial,sans-serif;letter-spacing:1.2px;fill:#91a380;text-transform:uppercase}.viz-board-edge-label{font:12px Inter,Arial,sans-serif;fill:#65826b;paint-order:stroke;stroke:#fcfcf8;stroke-width:5px;stroke-linejoin:round}.viz-board-controls{position:absolute;bottom:18px;left:20px;display:flex;align-items:center;gap:4px;z-index:9;background:#fcfcf8eb;border:1px solid #dae4d3;border-radius:9px;padding:5px;box-shadow:0 3px 15px #294f3010}.viz-board-controls button{border:0;background:transparent;color:#496e4d;font:500 13px Inter,Arial,sans-serif;min-width:33px;padding:7px;cursor:pointer;border-radius:5px}.viz-board-controls button:hover{background:#eaf1e1}.viz-board-controls span{font:10px Inter,Arial,sans-serif;color:#8b9e82;padding:0 9px}.is-whiteboard .viz-scene-stage{touch-action:none;cursor:grab}.is-whiteboard[data-navigation-state="panning"] .viz-scene-stage,.is-pan-ready .viz-object{cursor:grabbing}.viz-board-edge-animated{stroke-dasharray:7 6;animation:viz-board-flow .7s linear infinite}@keyframes viz-board-flow{to{stroke-dashoffset:-26}}@media(prefers-reduced-motion:reduce){.viz-board-edge-animated{animation:none}}
+/* Full workspace surfaces fit their measured parent; scene data never changes on resize. */
+.viz-canvas-shell.is-full-viewport{height:100%;width:100%;aspect-ratio:auto;min-height:0;border:0;border-radius:0;box-shadow:none;background:#f1f3eb}
+.viz-canvas-shell.is-full-viewport.is-whiteboard{background:#fcfcf8}
+/* Built-in domain renderers share semantic targets, not their internal visual structure. */
+.viz-aws-card{height:100%;box-sizing:border-box;border:1px solid #ddcfb0;border-top:3px solid #c48e35;border-radius:9px;background:#fffaf0;padding:15px;display:flex;flex-direction:column;justify-content:center;gap:7px;overflow:hidden}.viz-aws-service{display:flex;align-items:center;gap:10px;color:#b67b23;font:600 11px Inter,Arial,sans-serif}.viz-aws-service svg{width:30px;height:30px;flex-shrink:0}.viz-aws-card>strong{font-size:16px;color:#624c2b}.viz-aws-description{font-size:12px;color:#8c8069}.viz-aws-card>small{font:10px ui-monospace,monospace;color:#95866b;align-self:flex-start}.viz-uml-card{height:100%;box-sizing:border-box;border:1.5px solid #5b7462;border-radius:4px;background:#fbfdf8;overflow:hidden;font-family:ui-monospace,monospace}.viz-uml-title{text-align:center;padding:9px 12px;background:#edf3e7;border-bottom:1px solid #849b87;display:flex;flex-direction:column;gap:3px;font-size:15px}.viz-uml-title>span{font-size:9px;color:#849179}.viz-uml-section{padding:8px 12px;line-height:1.7;overflow:hidden}.viz-uml-section+.viz-uml-section{border-top:1px solid #849b87}.viz-uml-section>div{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.viz-uml-empty{color:#a1aa98;font-style:italic}.viz-graph-node{padding:0;display:block}.viz-graph-node>.viz-node-inline{border:0;border-radius:7px}.viz-graph-node>.viz-aws-card,.viz-graph-node>.viz-uml-card{border:0;border-radius:7px}.viz-matrix-brackets{border-color:transparent}.viz-matrix-brackets:before,.viz-matrix-brackets:after{display:none}.viz-matrix-outline{position:absolute;inset:0;width:100%;height:100%;overflow:visible;pointer-events:none}.viz-matrix-outline path{fill:none;stroke:#365c45;stroke-width:2;vector-effect:non-scaling-stroke}
+.viz-equation{height:100%;display:flex;flex-direction:column;justify-content:center;gap:14px;padding:12px 16px;box-sizing:border-box;overflow:hidden}.viz-equation-body{font-size:23px;color:#355642;line-height:1.5}
+
+.is-whiteboard.is-pan-ready .viz-object,.is-whiteboard.is-pan-ready .viz-resize-handle{cursor:grab}.is-whiteboard[data-navigation-state="panning"] .viz-object,.is-whiteboard[data-navigation-state="panning"] .viz-resize-handle{cursor:grabbing}
+
+.viz-matrix-cell .katex{font-size:1em}
