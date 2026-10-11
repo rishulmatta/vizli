@@ -83,6 +83,8 @@ Nebius credentials are now configured locally (see the live verification below).
 
 ## Remaining product boundaries
 
+The consolidated list of unfinished work, including hackathon submission items, is `docs/STATUS-PENDING.md`.
+
 - Whiteboards are spatially expandable within ±1,000,000 world coordinates, with up to 300 objects and 200 named areas per scene. Explicit draw/illustrate commands append validated illustrations; arbitrary narration does not continuously invent drawings.
 - Local API/session server is single-user and unauthenticated. Supabase cloud RLS does not secure that local server. Lightweight provider usage limits do not provide project ownership/isolation; public guest persistence and deployment configuration still need implementation.
 - Reconnect opens a fresh live voice session and resends the current scene. There is no durable or cross-process voice-session resume.

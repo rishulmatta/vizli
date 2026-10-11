@@ -1,7 +1,7 @@
 # Vizli agent handoff
 
 ## Read first
-1. `docs/STATUS.md`: current progress, verification, next actions.
+1. `docs/STATUS.md`: current progress and verification; `docs/STATUS-PENDING.md`: every unfinished item.
 2. `PLAN.md`: product requirements and selected architecture.
 3. `docs/DESIGN.md`: system/visual design and invariants.
 4. `BUILD_CONTRACT.md`: implementation interfaces and initial agent ownership.
