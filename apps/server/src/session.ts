@@ -3,18 +3,20 @@ import {
   appendIllustration,
   getSceneViewport,
   applyObjectEdit,
-  applyPresentationStep,
+  hasTarget,
   validatePresentationSequence,
+  type BoardViewport,
 } from "@vizli/shared";
 import { generateScene, type ScenePlanner } from "./generate.js";
 import type { LessonAuthor } from "./lessons.js";
 import { isArchitectureDomainCue } from "./domains/architecture.js";
 import { createAnchoredImage, type ImageSearch } from "./images.js";
 import { createActor, createMachine, type AnyActorRef } from "xstate";
-import { randomUUID, createHash } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import type {
   Scene,
   Project,
+  PresentationSequence,
   ServerMessage,
   VisualAction,
 } from "@vizli/shared";
@@ -39,8 +41,80 @@ const stableJson = (value: unknown): string => {
     .map((key) => `${JSON.stringify(key)}:${stableJson(record[key])}`)
     .join(",")}}`;
 };
-const sceneFingerprint = (scene: Scene) =>
-  createHash("sha256").update(stableJson(scene)).digest("hex");
+/**
+ * The scene a session interprets against. The session never owns the project: it reads the
+ * current value on demand and is told about changes through `sync`. `version` is stamped into
+ * dispatched actions as `revision`.
+ */
+export type ViewCamera = { viewport?: BoardViewport; activeAreaId?: string };
+export type ProjectSource = {
+  readonly project: Project;
+  readonly version: number;
+};
+const SCENE_CHANGED_REASON =
+  "The scene changed while I was interpreting that; say it again.";
+/** Per-viewer or annotation-only scene fields; changes to them never invalidate sequence ownership. */
+const NON_CONTENT_SCENE_FIELDS = new Set([
+  "objects",
+  "connections",
+  "lesson",
+  "ink",
+  "areas",
+  "viewport",
+  "activeAreaId",
+]);
+/** IDs whose canonical JSON differs between two lists (added, removed or changed). */
+function changedIds(
+  before: ReadonlyArray<{ id: string }>,
+  after: ReadonlyArray<{ id: string }>,
+): Set<string> {
+  const previous = new Map(before.map((item) => [item.id, stableJson(item)]));
+  const changed = new Set<string>();
+  for (const item of after) {
+    const json = previous.get(item.id);
+    if (json !== stableJson(item)) changed.add(item.id);
+    previous.delete(item.id);
+  }
+  for (const id of previous.keys()) changed.add(id);
+  return changed;
+}
+/** Objects and connections a sequence inserts, replaces or reveals. Context steps only touch `lesson`. */
+function sequenceOwnedIds(sequence: PresentationSequence): Set<string> {
+  const owned = new Set<string>();
+  for (const step of sequence.steps) {
+    if (step.type === "insert") {
+      for (const object of step.objects) owned.add(object.id);
+      for (const connection of step.connections ?? []) owned.add(connection.id);
+    } else if (step.type === "update")
+      for (const object of step.objects) owned.add(object.id);
+    else if (step.type === "reveal") {
+      owned.add(step.targetId);
+      owned.add(step.targetId.split(":")[0]!);
+    }
+  }
+  return owned;
+}
+/** Pre-existing objects a dispatched sequence reads or modifies; a peer deleting one invalidates it. */
+function sequenceDependencies(
+  scene: Scene,
+  sequence: PresentationSequence,
+): string[] {
+  const existing = new Set(scene.objects.map((object) => object.id));
+  const refs = new Set(sequence.sourceIds ?? []);
+  for (const step of sequence.steps) {
+    if (step.type === "insert")
+      for (const connection of step.connections ?? []) {
+        refs.add(connection.source);
+        refs.add(connection.target);
+      }
+    else if (step.type === "update")
+      for (const object of step.objects) refs.add(object.id);
+    else if (step.type === "reveal") refs.add(step.targetId);
+    else if (step.type === "context")
+      for (const id of step.lesson.sourceIds) refs.add(id);
+  }
+  return [...refs].filter((id) => existing.has(id));
+}
 export const cueMachine = createMachine({
   id: "cue",
   initial: "candidate",
@@ -92,13 +166,21 @@ export const sessionMachine = createMachine({
 });
 export class VisualSession {
   private session = createActor(sessionMachine).start();
-  private scene?: Scene;
-  private sequenceSnapshots = new Map<
+  private source?: ProjectSource;
+  private viewedSceneId?: string;
+  private viewedCamera?: ViewCamera;
+  /** The viewed scene as of the last attach/view/sync; `sync` diffs against it. */
+  private lastScene?: Scene;
+  /** Live sequence playback: the objects/connections its self-commits may change without invalidating acknowledgements. */
+  private sequenceOwnership = new Map<
     string,
-    { actionId: string; sceneId: string; snapshots: string[]; cursor: number }
+    { actionId: string; sceneId: string; ownedIds: Set<string> }
   >();
-  private revision = -1;
-  private cues: Project["cues"] = [];
+  /** What each dispatched actor depends on, so a peer edit can prune exactly the actors it broke. */
+  private dispatched = new Map<
+    string,
+    { targetId?: string; dependsOn?: string[] }
+  >();
   private abort?: AbortController;
   private generation = 0;
   private pending?: AnyActorRef;
@@ -127,58 +209,184 @@ export class VisualSession {
     /** Reasoning-tier Nemotron lesson author; absent in demo mode. */
     private lessonAuthor?: LessonAuthor,
   ) {}
-  setScene(
-    scene: Scene,
-    revision: number,
-    cues: Project["cues"],
-    sequenceId?: string,
-  ) {
-    if (revision < this.revision) {
-      this.send({ type: "error", message: "Stale scene revision rejected." });
-      return;
-    }
-    if (
-      revision === this.revision &&
-      this.scene &&
-      stableJson(scene) !== stableJson(this.scene)
-    ) {
-      this.send({
-        type: "error",
-        message: "Scene edits must increment the revision.",
-      });
-      return;
-    }
-    if (revision !== this.revision || scene.id !== this.scene?.id) {
-      const cameraOnly =
-        this.scene?.id === scene.id &&
-        this.scene?.layout === scene.layout &&
-        stableJson(this.scene?.objects) === stableJson(scene.objects) &&
-        stableJson(this.scene?.connections) === stableJson(scene.connections);
-      const playback = sequenceId
-        ? this.sequenceSnapshots.get(sequenceId)
-        : undefined;
-      const fingerprint = playback ? sceneFingerprint(scene) : undefined;
-      const expectedIndex =
-        playback?.sceneId === scene.id
-          ? playback.snapshots.findIndex(
-              (snapshot, index) =>
-                index >= playback.cursor && snapshot === fingerprint,
-            )
-          : -1;
-      if (playback && expectedIndex >= 0) playback.cursor = expectedIndex;
-      if (expectedIndex < 0) {
-        this.architectureQueue = [];
-        this.architectureResolvingAction = undefined;
-        if (!cameraOnly) this.architecturePlaybackAction = undefined;
-      }
-      this.invalidate(cameraOnly || expectedIndex >= 0);
-      this.speechSeen.clear();
-    }
-    this.scene = scene;
-    this.revision = revision;
-    this.cues = cues;
+  private get scene(): Scene | undefined {
+    const scenes = this.source?.project.scenes;
+    if (!scenes?.length) return undefined;
+    const scene = scenes.find((scene) => scene.id === this.viewedSceneId) ?? scenes[0];
+    // The camera is per-user and lives outside the shared document; planners still need the viewer's camera.
+    const view = this.viewedCamera;
+    if (!view || scene.id !== this.viewedSceneId) return scene;
+    return {
+      ...scene,
+      ...(view.viewport ? { viewport: view.viewport } : {}),
+      ...(view.activeAreaId ? { activeAreaId: view.activeAreaId } : {}),
+    };
+  }
+  private get cues(): Project["cues"] {
+    return this.source?.project.cues ?? [];
+  }
+  private get revision(): number {
+    return this.source?.version ?? 0;
+  }
+  /** Read scenes from `source`; view `sceneId` (default: the first scene). */
+  attach(source: ProjectSource, sceneId?: string) {
+    this.source = source;
+    this.viewedSceneId = sceneId ?? source.project.scenes[0]?.id;
+    this.lastScene = this.scene;
+    this.resetArchitecture();
+    this.invalidate();
+    this.speechSeen.clear();
     this.session.send({ type: "SCENE" });
     this.send({ type: "state", state: "ready" });
+  }
+  /** Change the viewed scene. Unknown IDs fall back to the first scene. */
+  view(sceneId: string, camera?: ViewCamera) {
+    const previous = this.scene?.id;
+    const scenes = this.source?.project.scenes ?? [];
+    this.viewedSceneId = scenes.some((scene) => scene.id === sceneId)
+      ? sceneId
+      : (scenes[0]?.id ?? sceneId);
+    this.viewedCamera = camera;
+    this.lastScene = this.scene;
+    if (this.scene?.id !== previous) this.resetScene();
+  }
+  /** No project (e.g. the room is gone): cues skip until the next attach. */
+  clearScene() {
+    this.source = undefined;
+    this.viewedSceneId = undefined;
+    this.viewedCamera = undefined;
+    this.lastScene = undefined;
+    this.resetScene();
+  }
+  /**
+   * The source project changed. `self` commits come from this presenter (sequence playback, undo,
+   * direct edits) and keep today's abort semantics; `peer` commits never abort interpretation and
+   * only prune dispatched actors whose targets vanished.
+   */
+  sync(origin: "self" | "peer") {
+    if (!this.source) return;
+    const next = this.scene,
+      prev = this.lastScene;
+    this.lastScene = next;
+    if (!next || !prev || prev.id !== next.id) {
+      this.resetScene();
+      return;
+    }
+    if (origin === "peer") {
+      this.pruneActors(next);
+      return;
+    }
+    const content =
+      prev.layout !== next.layout ||
+      stableJson(prev.objects) !== stableJson(next.objects) ||
+      stableJson(prev.connections) !== stableJson(next.connections);
+    const preserve = !content || this.sequenceOwned(prev, next);
+    if (!preserve) this.resetArchitecture();
+    this.invalidate(preserve);
+    this.speechSeen.clear();
+  }
+  private resetScene() {
+    this.resetArchitecture();
+    this.invalidate();
+    this.speechSeen.clear();
+  }
+  private resetArchitecture() {
+    this.architectureQueue = [];
+    this.architectureResolvingAction = undefined;
+    this.architecturePlaybackAction = undefined;
+  }
+  /** True iff every changed object/connection belongs to a live sequence and no other scene-level field changed. */
+  private sequenceOwned(prev: Scene, next: Scene): boolean {
+    const owned = new Set<string>();
+    for (const record of this.sequenceOwnership.values())
+      if (record.sceneId === next.id)
+        for (const id of record.ownedIds) owned.add(id);
+    if (owned.size === 0) return false;
+    const rest = (scene: Scene) =>
+      stableJson(
+        Object.fromEntries(
+          Object.entries(scene).filter(
+            ([key]) => !NON_CONTENT_SCENE_FIELDS.has(key),
+          ),
+        ),
+      );
+    if (rest(prev) !== rest(next)) return false;
+    for (const id of changedIds(prev.objects, next.objects))
+      if (!owned.has(id)) return false;
+    for (const id of changedIds(prev.connections, next.connections))
+      if (!owned.has(id)) return false;
+    return true;
+  }
+  /** Peer edits: invalidate only dispatched actors whose target or sequence dependencies vanished. */
+  private pruneActors(next: Scene) {
+    const objectIds = new Set(next.objects.map((object) => object.id));
+    for (const [id, actor] of this.actors) {
+      const record = this.dispatched.get(id);
+      if (!record) continue;
+      const lost =
+        (record.targetId !== undefined && !hasTarget(next, record.targetId)) ||
+        record.dependsOn?.some((dependency) => !objectIds.has(dependency));
+      if (!lost) continue;
+      if (actor.getSnapshot().status === "active")
+        actor.send({ type: "INVALIDATE" });
+      this.forget(id);
+      if (this.architecturePlaybackAction === id) {
+        this.architecturePlaybackAction = undefined;
+        this.architectureQueue = [];
+      }
+    }
+  }
+  /** Drop every record of a dispatched action. */
+  private forget(id: string) {
+    this.actors.delete(id);
+    this.dispatched.delete(id);
+    this.speculative.delete(id);
+    for (const [sequenceId, record] of this.sequenceOwnership)
+      if (record.actionId === id) this.sequenceOwnership.delete(sequenceId);
+  }
+  /** Re-check a proposal against the live scene after a concurrent change. Undefined means it no longer applies. */
+  private revalidate(
+    p: ResolvedActionProposal,
+    live: Scene,
+    generated?: Scene,
+  ): { illustration?: Scene } | undefined {
+    try {
+      if (p.targetId && !hasTarget(live, p.targetId)) return undefined;
+      switch (p.type) {
+        case "edit_object":
+          applyObjectEdit(live, p.targetId!, p.patch!);
+          break;
+        case "sequence":
+          validatePresentationSequence(live, p.sequence!);
+          break;
+        case "navigate":
+          if (
+            p.navigation?.targetId &&
+            !hasTarget(live, p.navigation.targetId)
+          )
+            return undefined;
+          if (
+            p.navigation?.areaId &&
+            !live.areas?.some((area) => area.id === p.navigation!.areaId)
+          )
+            return undefined;
+          break;
+        case "add_image":
+          if (
+            !live.objects.some(
+              (object) => object.id === p.targetId && object.kind === "chart",
+            )
+          )
+            return undefined;
+          break;
+        case "add_illustration":
+          if (!generated || live.layout !== "whiteboard") return undefined;
+          return { illustration: appendIllustration(live, generated) };
+      }
+      return {};
+    } catch {
+      return undefined;
+    }
   }
   private invalidate(preserveDispatched = false) {
     this.generation++;
@@ -193,7 +401,8 @@ export class VisualSession {
         if (actor.getSnapshot().status === "active")
           actor.send({ type: "INVALIDATE" });
       this.actors.clear();
-      this.sequenceSnapshots.clear();
+      this.dispatched.clear();
+      this.sequenceOwnership.clear();
       this.speculative.clear();
     }
   }
@@ -204,7 +413,7 @@ export class VisualSession {
       const actor = this.actors.get(id);
       if (actor?.getSnapshot().status === "active")
         actor.send({ type: "INVALIDATE" });
-      this.actors.delete(id);
+      this.forget(id);
     }
     this.speculative.clear();
     this.invalidate(true);
@@ -322,7 +531,6 @@ export class VisualSession {
       this.pending.send({ type: "INVALIDATE" });
     const generation = ++this.generation,
       scene = this.scene,
-      revision = this.revision,
       id = randomUUID();
     if (architectureClause) this.architectureResolvingAction = id;
     const actor = createActor(cueMachine);
@@ -437,25 +645,10 @@ export class VisualSession {
         if (!p.sequence)
           throw new Error("A presentation sequence is required.");
         validatePresentationSequence(scene, p.sequence);
-        let snapshot = scene;
-        const snapshots = [sceneFingerprint(snapshot)];
-        for (const step of p.sequence.steps) {
-          snapshot = applyPresentationStep(snapshot, step);
-          snapshots.push(sceneFingerprint(snapshot));
-        }
-        this.sequenceSnapshots.set(p.sequence.id, {
-          actionId: id,
-          sceneId: scene.id,
-          snapshots,
-          cursor: 0,
-        });
-        if (this.sequenceSnapshots.size > 100)
-          this.sequenceSnapshots.delete(
-            this.sequenceSnapshots.keys().next().value!,
-          );
       }
       let object;
       let illustration: Scene | undefined;
+      let generated: Scene | undefined;
       let illustrationSource: "demo" | "live" | undefined;
       let illustrationServed: VisualAction["served"];
       if (p.type === "add_illustration") {
@@ -486,6 +679,7 @@ export class VisualSession {
             actor.send({ type: "INVALIDATE" });
           return;
         }
+        generated = result.scene;
         illustration = appendIllustration(scene, result.scene);
         illustrationSource = result.source;
         illustrationServed = result.served
@@ -542,6 +736,23 @@ export class VisualSession {
           return;
         }
       }
+      // Dispatch-time revalidation: a peer (or anything that did not abort this cue) may have
+      // changed the scene while the model was thinking. Re-check against the live scene.
+      let base = scene;
+      const live = this.scene;
+      if (live !== scene && (!live || stableJson(live) !== stableJson(scene))) {
+        const revalidated =
+          live && live.id === scene.id
+            ? this.revalidate(p, live, generated)
+            : undefined;
+        if (!revalidated) {
+          actor.send({ type: "SKIP" });
+          this.send({ type: "skipped", reason: SCENE_CHANGED_REASON });
+          return;
+        }
+        base = live!;
+        if (revalidated.illustration) illustration = revalidated.illustration;
+      }
       if (fromSpeech) {
         seen.add(fingerprint);
         if (seen.size > 100) seen.delete(seen.values().next().value!);
@@ -560,8 +771,8 @@ export class VisualSession {
         dx: p.dx,
         dy: p.dy,
         patch: p.patch,
-        objects: illustration?.objects.slice(scene.objects.length),
-        connections: illustration?.connections.slice(scene.connections.length),
+        objects: illustration?.objects.slice(base.objects.length),
+        connections: illustration?.connections.slice(base.connections.length),
         area: illustration?.areas?.find(
           (area) => area.id === illustration?.activeAreaId,
         ),
@@ -574,12 +785,29 @@ export class VisualSession {
             : illustrationSource === "live"
               ? "Created an editable illustration with Nemotron on Nebius."
               : p.reason,
-        sceneId: scene.id,
-        revision,
+        sceneId: base.id,
+        revision: this.revision,
       };
       actor.send({ type: "READY" });
       actor.send({ type: "DISPATCH" });
       this.actors.set(id, actor);
+      this.dispatched.set(id, {
+        targetId: p.targetId,
+        dependsOn: p.sequence
+          ? sequenceDependencies(base, p.sequence)
+          : undefined,
+      });
+      if (p.type === "sequence" && p.sequence) {
+        this.sequenceOwnership.set(p.sequence.id, {
+          actionId: id,
+          sceneId: base.id,
+          ownedIds: sequenceOwnedIds(p.sequence),
+        });
+        if (this.sequenceOwnership.size > 100)
+          this.sequenceOwnership.delete(
+            this.sequenceOwnership.keys().next().value!,
+          );
+      }
       if (fromSpeech && !final) this.speculative.add(id);
       this.pending = undefined;
       if (p.type === "sequence" && p.sequence?.domain === "architecture.aws-request-flow") {
@@ -590,6 +818,7 @@ export class VisualSession {
         const oldest = this.actors.keys().next().value!;
         this.actors.get(oldest)?.stop();
         this.actors.delete(oldest);
+        this.dispatched.delete(oldest);
       }
       this.send({ type: "action", action });
     } catch (error) {
@@ -633,21 +862,17 @@ export class VisualSession {
     this.actors.get(id)?.send({ type: "APPLIED" });
   }
   complete(id: string) {
-    for (const [sequenceId, record] of this.sequenceSnapshots)
-      if (record.actionId === id) this.sequenceSnapshots.delete(sequenceId);
     this.actors.get(id)?.send({ type: "COMPLETE" });
-    this.actors.delete(id);
+    this.forget(id);
     if (this.architecturePlaybackAction === id) {
       this.architecturePlaybackAction = undefined;
       this.drainArchitectureQueue();
     }
   }
   cancel(id: string) {
-    for (const [sequenceId, record] of this.sequenceSnapshots)
-      if (record.actionId === id) this.sequenceSnapshots.delete(sequenceId);
     const actor = this.actors.get(id);
     if (actor?.getSnapshot().status === "active") actor.send({ type: "INVALIDATE" });
-    this.actors.delete(id);
+    this.forget(id);
     if (this.architecturePlaybackAction === id) {
       this.architecturePlaybackAction = undefined;
       this.architectureQueue = [];

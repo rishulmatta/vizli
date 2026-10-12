@@ -11,6 +11,34 @@ import { generateScene } from "./generate.js";
 import { createDemoProject } from "@vizli/shared";
 import { NvidiaSpeech } from "./speech.js";
 import { buildApp } from "./app.js";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+const tempDirs: string[] = [];
+async function tempDir() {
+  const dir = await mkdtemp(join(tmpdir(), "vizli-usage-"));
+  tempDirs.push(dir);
+  return dir;
+}
+afterEach(async () => {
+  for (const dir of tempDirs.splice(0)) await rm(dir, { recursive: true, force: true });
+});
+/** Session messages other than `join` require a joined project room. */
+async function joinDefault(socket: WebSocket) {
+  const joined = new Promise<void>((resolve) => {
+    const handler = (data: Buffer, isBinary: boolean) => {
+      if (isBinary || JSON.parse(data.toString()).type !== "joined") return;
+      socket.off("message", handler);
+      resolve();
+    };
+    socket.on("message", handler);
+  });
+  socket.send(
+    JSON.stringify({ type: "join", projectId: "default", userId: "user-1", clientId: "client-1", name: "Tester", color: "#d2432f" }),
+  );
+  await joined;
+}
 const limits: UsageLimits = {
   voiceConcurrent: 1,
   voiceSeconds: 10,
@@ -131,7 +159,7 @@ describe("in-process usage limits", () => {
         callbacks: ConstructorParameters<typeof NvidiaSpeech>[2];
       }[] = [];
     const app = await buildApp(
-      { NODE_ENV: "test", NVIDIA_API_KEY: "test" },
+      { NODE_ENV: "test", NVIDIA_API_KEY: "test", DATA_DIR: await tempDir() },
       {
         usage: guard,
         createSpeech: (_key, _model, callbacks) => {
@@ -147,6 +175,7 @@ describe("in-process usage limits", () => {
     );
     await new Promise<void>((resolve) => socket.once("open", () => resolve()));
     try {
+      await joinDefault(socket);
       socket.send(JSON.stringify({ type: "listen", enabled: true }));
       await vi.waitFor(() => expect(connections).toHaveLength(1));
       expect(guard.snapshot().voice).toBe(1);
@@ -167,11 +196,12 @@ describe("in-process usage limits", () => {
     const guard = new UsageGuard(limits),
       close = vi.fn();
     const app = await buildApp(
-      { NODE_ENV: "test", NVIDIA_API_KEY: "test" },
+      { NODE_ENV: "test", NVIDIA_API_KEY: "test", DATA_DIR: await tempDir() },
       { usage: guard, createSpeech: () => ({ audio: vi.fn(), close }) },
     );
     await app.ready();
     const socket = await app.injectWS("/api/session");
+    await joinDefault(socket);
     socket.send(JSON.stringify({ type: "listen", enabled: true }));
     await vi.waitFor(() => expect(guard.snapshot().voice).toBe(1));
     await app.close();

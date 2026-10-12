@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useMachine } from "@xstate/react";
+import { useMachine, useSelector } from "@xstate/react";
 import {
   ArrowDownToLine,
   ArrowLeft,
@@ -38,7 +38,7 @@ import {
   X,
 } from "lucide-react";
 import {
-  createDemoProject,
+  canonicalScene,
   createPluginObject,
   resolveImageAnchor,
   ProjectSchema,
@@ -51,7 +51,6 @@ import {
   type InkColorId,
   type InkTool,
   type InkWidthId,
-  invalidateDerivedResults,
   appendIllustration,
   getSceneViewport,
   hasTarget,
@@ -60,9 +59,15 @@ import {
   type SceneObject,
   type Effect,
   type VisualAction,
+  type ClientMessage,
 } from "@vizli/shared";
 import SceneCanvas from "./canvas/SceneCanvas";
+import {useLocalViews,splitView,sameView,type SceneView} from "./collab/useLocalViews";
+import {useCollabDoc,type CollabStatus,type CommitSource} from "./collab/useCollabDoc";
 import WhiteboardControls from "./editor/WhiteboardControls";
+import PresenceBar from "./editor/PresenceBar";
+import {saveIdentity} from "./collab/identity";
+import {useCursorPublisher} from "./collab/useCursorPublisher";
 import {usePresentationPlayback} from "./playback/usePresentationPlayback";
 import PlaybackControls from "./playback/PlaybackControls";
 import PluginLibrary from "./editor/PluginLibrary";
@@ -70,7 +75,7 @@ import PluginInspector from "./editor/PluginInspector";
 import ObjectDataEditor from "./editor/ObjectDataEditor";
 import CreateScene from "./generation/CreateScene";
 import CloudSync from "./cloud/CloudSync";
-import { modeMachine, connectionMachine, inputMachine } from "./lib/machines";
+import { modeMachine, inputMachine } from "./lib/machines";
 import { captureAudio } from "./lib/audio";
 import { describeServed, shortModelName } from "./lib/served";
 
@@ -88,7 +93,6 @@ type Log = {
   kind: "cue" | "action" | "skip" | "error";
 };
 const uid = () => crypto.randomUUID();
-const LOCAL_KEY = "vizli.project.v1";
 const AWS_SERVICE_LABELS: Record<
   NonNullable<SceneObject["aws"]>["service"],
   string
@@ -105,31 +109,41 @@ const AWS_SERVICE_LABELS: Record<
 function validProject(value: unknown): value is Project {
   return ProjectSchema.safeParse(value).success;
 }
-const BACKUP_KEY = "vizli.project.invalid";
-function readProject() {
-  let stored: string | null = null;
-  try {
-    stored = localStorage.getItem(LOCAL_KEY);
-    const raw = JSON.parse(stored || "null");
-    if (validProject(raw)) return raw;
-  } catch {}
-  // Never discard a user's data silently: keep the unreadable copy for export/recovery.
-  if (stored) {
-    try {
-      localStorage.setItem(BACKUP_KEY, stored);
-    } catch {}
-    console.warn(`Stored project failed validation; a copy is kept under ${BACKUP_KEY}.`);
-  }
-  return createDemoProject();
+const SAVE_TEXT: Record<CollabStatus, string> = {
+  loading: "Opening project…",
+  cached: "Saved on this device",
+  connecting: "Connecting…",
+  live: "Live",
+  offline: "Offline — changes sync when you reconnect",
+};
+type Collab = ReturnType<typeof useCollabDoc>;
+type CommitOptions = { base?: Project; source?: CommitSource; sequenceId?: string; keepPlayback?: boolean };
+
+/** Opens the shared project for `/p/<projectId>`; the workspace renders once a document snapshot exists. */
+export default function App({ projectId }: { projectId: string }) {
+  const collab = useCollabDoc(projectId);
+  if (!collab.project)
+    return (
+      <div className="app canvas-first">
+        <div className="project-opening" role="status" data-testid="project-opening" style={{ display: "grid", placeItems: "center", minHeight: "100vh" }}>
+          Opening project…
+        </div>
+      </div>
+    );
+  return <Workspace collab={collab} project={collab.project} />;
 }
 
-export default function App() {
-  const [project, setProject] = useState<Project>(readProject);
-  const [sceneIndex, setSceneIndex] = useState(0);
+function Workspace({ collab, project }: { collab: Collab; project: Project }) {
+  const [currentSceneId, setCurrentSceneId] = useState(() => project.scenes[0].id);
+  const foundSceneIndex = project.scenes.findIndex((s) => s.id === currentSceneId);
+  const sceneIndex = foundSceneIndex < 0 ? 0 : foundSceneIndex;
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [followingId, setFollowingId] = useState<string | null>(null);
+  const applyingFollow = useRef(false);
+  const [me, setMe] = useState(() => ({ name: collab.identity.name, color: collab.identity.color }));
   const [effect, setEffect] = useState<Effect | null>(null);
   const [mode, sendMode] = useMachine(modeMachine);
-  const [connection, sendConnection] = useMachine(connectionMachine);
+  const connection = useSelector(collab.transport.connection, (state) => state);
   const [input, sendInput] = useMachine(inputMachine);
   const [status, setStatus] = useState<ProviderStatus>({
     mode: "demo",
@@ -142,7 +156,7 @@ export default function App() {
   const [transcript, setTranscript] = useState("");
   const [cueState, setCueState] = useState("Ready for a cue");
   const [notice, setNotice] = useState("");
-  const [saved, setSaved] = useState("Saved on this device");
+  const saved = collab.storageFull ? "Storage full — export your project" : SAVE_TEXT[collab.status];
   const [dialog, setDialog] = useState<
     "providers" | "image" | "tour" | "scene" | null
   >(null);
@@ -160,23 +174,25 @@ export default function App() {
   const [inkTool,setInkTool]=useState<InkTool|null>(null);
   const [penStyle,setPenStyle]=useState<{color:InkColorId;width:InkWidthId}>({color:'red',width:'medium'});
   const [scenesOpen,setScenesOpen]=useState(false),[filesOpen,setFilesOpen]=useState(false),[activityOpen,setActivityOpen]=useState(false);
-  const [historyCount, setHistoryCount] = useState(0);
-  const cancelPlaybackRef=useRef<()=>void>(()=>{}),selfSequenceId=useRef<string|undefined>(undefined),historySequenceId=useRef<string|undefined>(undefined);
-  const initialLoadSettled = useRef(false);
-  const history = useRef<Project[]>([]),
-    socket = useRef<WebSocket | null>(null),
-    revision = useRef(1),
-    stopAudio = useRef<(() => void) | null>(null),
+  const cancelPlaybackRef=useRef<()=>void>(()=>{});
+  const stopAudio = useRef<(() => void) | null>(null),
     audioGeneration = useRef(0),
     projectRef = useRef(project),
-    sceneIndexRef = useRef(sceneIndex),
+    sceneIdRef = useRef(currentSceneId),
     mounted = useRef(true),
     logEnd = useRef<HTMLDivElement>(null);
   const importRef = useRef<HTMLInputElement>(null),
     imageRef = useRef<HTMLInputElement>(null);
+  // Render-time snapshot; commits refresh it synchronously from the document so same-event reads see their own writes.
   projectRef.current = project;
-  sceneIndexRef.current = sceneIndex;
-  const scene = project.scenes[Math.min(sceneIndex, project.scenes.length - 1)];
+  sceneIdRef.current = project.scenes[sceneIndex].id;
+  // Camera and active area are per-user local state (collab/useLocalViews); scene fields only seed the initial view.
+  const {getView,setView,hasView,views}=useLocalViews(project.id);
+  // Canonical key order (camera fields last) keeps JSON comparisons in the playback runtime stable across commit round-trips.
+  const viewScene=useCallback((s:Scene):Scene=>({...splitView(s).rest,...getView(s)}),[getView]);
+  const viewSceneRef=useRef(viewScene);viewSceneRef.current=viewScene;
+  const currentViewScene=useCallback(()=>{const p=projectRef.current;return viewSceneRef.current(p.scenes.find(s=>s.id===sceneIdRef.current)??p.scenes[0]);},[]);
+  const scene = viewScene(project.scenes[sceneIndex]);
   const selected = scene.objects.find((o) => o.id === selectedId);
   const isPresenting = mode.matches("presenting");
   const addLog = useCallback(
@@ -184,30 +200,9 @@ export default function App() {
       setLogs((l) => [...l.slice(-39), { id: uid(), text, kind }]),
     [],
   );
-  const send = useCallback((message: unknown) => {
-    if (socket.current?.readyState === WebSocket.OPEN) {
-      socket.current.send(JSON.stringify(message));
-      return true;
-    }
-    return false;
-  }, []);
-  const snapshot = useCallback(
-    () =>
-      send({
-        type: "scene",
-        ...(selfSequenceId.current ? {sequenceId:selfSequenceId.current} : {}),
-        scene:
-          projectRef.current.scenes[
-            Math.min(
-              sceneIndexRef.current,
-              projectRef.current.scenes.length - 1,
-            )
-          ],
-        revision: revision.current,
-        cues: projectRef.current.cues,
-      }),
-    [send],
-  );
+  const collabSend = collab.send;
+  // Session messages (cue, listen, view, acknowledgements) are accepted only after the socket joined the project.
+  const send = useCallback((message: ClientMessage) => collabSend(message), [collabSend]);
   const stopMic = useCallback(() => {
     audioGeneration.current++;
     stopAudio.current?.();
@@ -215,99 +210,130 @@ export default function App() {
     send({ type: "listen", enabled: false });
     sendInput({ type: "STOP" });
   }, [send, sendInput]);
-  const commit = useCallback((next: Project, keepPlayback = false) => {
-    const candidate = { ...next, scenes:next.scenes.map(invalidateDerivedResults), updatedAt: new Date().toISOString() };
-    // Every persisted project must satisfy the shared schema; an invalid commit would be rejected by the server and dropped on reload.
-    const parsed = ProjectSchema.safeParse(candidate);
-    if (!parsed.success) {
-      setNotice(`Change not applied: ${parsed.error.issues[0]?.message ?? "it would make the project invalid"}.`);
-      return;
+  const collabCommit = collab.commit, collabUndo = collab.undo, collabRedo = collab.redo, getLatest = collab.getProject;
+  /**
+   * Three-way commit into the shared document: `base` is the snapshot the caller derived `next` from
+   * (defaults to the latest document state), so only the caller's own field changes are written and
+   * concurrent collaborator edits survive. Validation, derived-result invalidation and undo capture live in useCollabDoc.
+   */
+  const commit = useCallback((next: Project, options: CommitOptions = {}) => {
+    const { keepPlayback, ...rest } = options;
+    if (!keepPlayback && rest.source !== "sequence") cancelPlaybackRef.current();
+    const result = collabCommit(next, rest);
+    if (!result.ok) {
+      setNotice(`Change not applied: ${result.error ?? "it would make the project invalid"}.`);
+      return false;
     }
-    if (!keepPlayback) { cancelPlaybackRef.current();selfSequenceId.current=undefined; }
-    history.current.push(projectRef.current);
-    if (history.current.length > 60) history.current.shift();
-    setHistoryCount(history.current.length);
-    setProject(parsed.data);
-  }, []);
+    if (result.skipped.length) setNotice("That object was removed by a collaborator.");
+    projectRef.current = getLatest() ?? projectRef.current;
+    return true;
+  }, [collabCommit, getLatest]);
   const undo = useCallback(() => {
-    cancelPlaybackRef.current();selfSequenceId.current=undefined;
-    const prior = history.current.pop();
-    if (prior) {
-      setProject(prior);
-      setHistoryCount(history.current.length);
-      setSelectedId(null);
-      setEffect(null);
-    } else setEffect(null);
-  }, []);
-  const updateScene = useCallback(
-    (next: Scene) =>
+    cancelPlaybackRef.current();
+    const undone = collabUndo();
+    if (undone) { projectRef.current = getLatest() ?? projectRef.current; setSelectedId(null); }
+    setEffect(null);
+    return undone;
+  }, [collabUndo, getLatest]);
+  const redo = useCallback(() => {
+    cancelPlaybackRef.current();
+    if (collabRedo()) { projectRef.current = getLatest() ?? projectRef.current; setSelectedId(null); }
+    setEffect(null);
+  }, [collabRedo, getLatest]);
+  // Camera fields never reach the project: they are routed to the local view and only the remainder is committed.
+  // Returns true when the remaining scene differs from the stored one.
+  const routeView = useCallback((next: Scene, base?: Scene) => {
+    const {rest} = splitView(next);
+    const raw = projectRef.current.scenes.find((s) => s.id === next.id);
+    if (!raw) return {rest, changed: false};
+    const current = getView(raw);
+    const patch: Partial<SceneView> = {};
+    if (next.viewport && !sameView({viewport: next.viewport}, {viewport: current.viewport})) patch.viewport = next.viewport;
+    if (next.activeAreaId !== undefined && next.activeAreaId !== current.activeAreaId) patch.activeAreaId = next.activeAreaId;
+    // Pin the effective view so legacy scene.viewport values stay in effect after the field is stripped.
+    if (Object.keys(patch).length || !hasView(next.id)) setView(next.id, {viewport: current.viewport, activeAreaId: current.activeAreaId, ...patch});
+    return {rest, changed: canonicalScene(rest) !== canonicalScene(splitView(base ?? raw).rest)};
+  }, [getView, setView, hasView]);
+  /** Commits one scene. `base` is the (view-merged) scene the caller spread; it defaults to the latest stored scene. */
+  const commitSceneChange = useCallback(
+    (next: Scene, base: Scene | undefined, options: Omit<CommitOptions, "base">) => {
+      const latest = projectRef.current;
+      if (!latest.scenes.some((s) => s.id === next.id)) {
+        setNotice("That scene was removed by a collaborator.");
+        return;
+      }
+      const {rest, changed} = routeView(next, base);
+      if (!changed) return;
+      const baseScene = base ? splitView(base).rest : undefined;
       commit({
-        ...projectRef.current,
-        scenes: projectRef.current.scenes.map((s) =>
-          s.id === next.id ? next : s,
-        ),
-        cues: projectRef.current.cues.filter(
-          (c) => c.sceneId !== next.id || hasTarget(next, c.targetId),
-        ),
-      }),
-    [commit],
+        ...latest,
+        scenes: latest.scenes.map((s) => (s.id === rest.id ? rest : s)),
+        cues: latest.cues.filter((c) => c.sceneId !== rest.id || hasTarget(rest, c.targetId)),
+      }, {
+        ...options,
+        ...(baseScene ? {base: {...latest, scenes: latest.scenes.map((s) => (s.id === rest.id ? baseScene : s))}} : {}),
+      });
+    },
+    [commit, routeView],
+  );
+  const updateScene = useCallback(
+    (next: Scene, base?: Scene, source: CommitSource = "user") => commitSceneChange(next, base, {source}),
+    [commitSceneChange],
   );
   // Ink commits share the validated/undoable path but must not cancel a running narrated sequence.
   const updateSceneInk = useCallback(
-    (next: Scene) =>
-      commit({
-        ...projectRef.current,
-        scenes: projectRef.current.scenes.map((s) => (s.id === next.id ? next : s)),
-      }, true),
-    [commit],
+    (next: Scene, base?: Scene) => commitSceneChange(next, base, {keepPlayback: true}),
+    [commitSceneChange],
   );
   const pendingBoardEffect = useRef<Effect|null>(null);
   const playback=usePresentationPlayback({
-    readScene:()=>{const s=projectRef.current.scenes[Math.min(sceneIndexRef.current,projectRef.current.scenes.length-1)];return s.ink?{...s,ink:undefined}:s;},
-    commitScene:(stepped,sequenceId)=>{
-      const localInk=projectRef.current.scenes.find(s=>s.id===stepped.id)?.ink;
-      const next=localInk?{...stepped,ink:localInk}:stepped;
-      if(historySequenceId.current!==sequenceId){history.current.push(projectRef.current);if(history.current.length>60)history.current.shift();setHistoryCount(history.current.length);historySequenceId.current=sequenceId;}
-      const nextProject={...projectRef.current,scenes:projectRef.current.scenes.map(s=>s.id===next.id?next:s),cues:projectRef.current.cues.filter(c=>c.sceneId!==next.id||hasTarget(next,c.targetId)),updatedAt:new Date().toISOString()};
-      selfSequenceId.current=sequenceId;projectRef.current=nextProject;setProject(nextProject);
+    readScene:()=>{const s=currentViewScene();return s.ink?{...s,ink:undefined}:s;},
+    commitScene:(steppedWithView,sequenceId)=>{
+      // Camera steps move only this user's camera; the rest of the stepped scene is the shared mutation.
+      const {view,rest:stepped}=splitView(steppedWithView);
+      setView(stepped.id,view);
+      const latest=projectRef.current;
+      const raw=latest.scenes.find(s=>s.id===stepped.id);
+      if(!raw)return;
+      // Base = what readScene() returned minus the camera (ink excluded on both sides, so peers' strokes are untouched).
+      const baseScene={...splitView(raw).rest,ink:undefined};
+      commit({...latest,scenes:latest.scenes.map(s=>s.id===stepped.id?stepped:s),cues:latest.cues.filter(c=>c.sceneId!==stepped.id||hasTarget(stepped,c.targetId))},
+        {base:{...latest,scenes:latest.scenes.map(s=>s.id===stepped.id?baseScene:s)},source:'sequence',sequenceId,keepPlayback:true});
     },
-    acknowledge:(actionId,complete)=>send({type:complete?'animation.completed':'applied',actionId}),
-    onCancel:actionId=>send({type:'animation.cancelled',actionId}),
+    acknowledge:(actionId,complete)=>{if(complete)collab.endSequence();send({type:complete?'animation.completed':'applied',actionId});},
+    onCancel:actionId=>{collab.endSequence();send({type:'animation.cancelled',actionId});},
     onError:message=>{addLog(message,'error');setNotice(message);},
   });
-  cancelPlaybackRef.current=()=>{playback.cancel();selfSequenceId.current=undefined;};
+  cancelPlaybackRef.current=()=>{playback.cancel();collab.endSequence();};
+  const playbackActive=useRef(false);playbackActive.current=playback.active;
+  const effectRef=useRef(effect);effectRef.current=effect;
   const handleAction = useCallback(
     (action: VisualAction) => {
-      const current =
-        projectRef.current.scenes[
-          Math.min(sceneIndexRef.current, projectRef.current.scenes.length - 1)
-        ];
-      if (action.sceneId !== current.id || action.revision !== revision.current)
-        return;
+      const current = currentViewScene();
+      // Actions are grounded server-side against the shared document; only the scene and target checks remain here.
+      if (action.sceneId !== current.id) return;
       if (action.type === "sequence") {
         if (playback.active) cancelPlaybackRef.current();
-        historySequenceId.current=undefined;
-        if(playback.start(action)){setEffect(null);addLog(action.reason||'Presentation sequence started','action');}
+        if(playback.start(action)){collab.beginSequence(action.sequence?.id ?? action.id);setEffect(null);addLog(action.reason||'Presentation sequence started','action');}
         return;
       }
       // A speech-revision clear retracts temporary emphasis only; it must not stop a narrated sequence.
       if(playback.active && !(action.type === "clear" && action.scope === "effects"))cancelPlaybackRef.current();
       if (action.type === "undo") {
-        if (!history.current.length) { addLog("Nothing to undo.", "error"); return; }
-        undo();
+        if (!undo()) { addLog("Nothing to undo.", "error"); return; }
         send({ type: "applied", actionId: action.id });
       } else if (action.type === "clear") {
         setEffect(null);
         send({ type: "applied", actionId: action.id });
       } else if (action.type === "navigate") {
         if (!action.navigation || current.layout !== "whiteboard") { addLog("Navigation needs a whiteboard scene.", "error"); return; }
-        updateScene(applyBoardNavigation(current, action.navigation));
+        updateScene(applyBoardNavigation(current, action.navigation), current, "ai");
         send({ type: "applied", actionId: action.id });
       } else if (action.type === "edit_object") {
         if (!action.targetId || !action.patch) { addLog("The object edit was incomplete and was not applied.", "error"); return; }
         try {
           const next = applyObjectEdit(current, action.targetId, action.patch);
-          updateScene(next);
+          updateScene(next, current, "ai");
           send({ type: "applied", actionId: action.id });
         } catch (error) {
           addLog(error instanceof Error ? error.message : "The object edit could not be applied.", "error");
@@ -322,12 +348,12 @@ export default function App() {
           return {...positioned, x: positioned.x + (action.dx ?? 0), y: positioned.y + (action.dy ?? 0), anchor: undefined};
         })});
         if (!next.success) { addLog("The object cannot be moved beyond the canvas limits.", "error"); return; }
-        updateScene(next.data);
+        updateScene(next.data, current, "ai");
         send({ type: "applied", actionId: action.id });
       } else if (action.type === "add_illustration") {
         const next=SceneSchema.safeParse({...current,objects:[...current.objects,...(action.objects??[])],connections:[...current.connections,...(action.connections??[])],...(action.area?{areas:[...(current.areas??[]).filter(a=>a.id!==action.area?.id),action.area],activeAreaId:action.area.id}:{}),...(action.viewport?{viewport:action.viewport}:{})});
         if(!next.success){addLog("The illustration could not be added to this board.","error");return;}
-        updateScene(next.data);
+        updateScene(next.data, current, "ai");
         send({ type: "applied", actionId: action.id });
       } else if (action.type === "add_image") {
         const object = action.object;
@@ -348,7 +374,7 @@ export default function App() {
           );
           return;
         }
-        updateScene(next.data);
+        updateScene(next.data, current, "ai");
         setSelectedId(object.id);
         send({ type: "applied", actionId: action.id });
       } else if (action.type === "add_node") {
@@ -366,7 +392,7 @@ export default function App() {
         if (current.objects.some((o) => o.id === object.id)) { addLog("That component already exists.", "error"); return; }
         const next = SceneSchema.safeParse({ ...current, objects: [...current.objects, object] });
         if (!next.success) { addLog("The component could not be added to this scene.", "error"); return; }
-        updateScene(next.data);
+        updateScene(next.data, current, "ai");
         send({ type: "applied", actionId: action.id });
       } else if (action.type === "reveal") {
         // Nested part targets reveal their owning object; nothing is acknowledged unless an object changes.
@@ -378,146 +404,118 @@ export default function App() {
           objects: current.objects.map((o) =>
             o.id === owner.id ? { ...o, hidden: false } : o,
           ),
-        });
+        }, current, "ai");
         send({ type: "applied", actionId: action.id });
       } else if(current.layout === "whiteboard" && action.targetId && (action.type === "highlight" || action.type === "point")) {
-        const next=applyBoardNavigation(current,{targetId:action.targetId});
+        const {view}=splitView(applyBoardNavigation(current,{targetId:action.targetId}));
         pendingBoardEffect.current={action,startedAt:Date.now()};
-        updateScene(next);
+        setView(current.id,view);
       } else setEffect({ action, startedAt: Date.now() });
       const served = describeServed(action.served);
       addLog(`${action.reason || `${action.type} applied`}${served ? ` · ${served}` : ""}`, "action");
     },
-    [addLog, send, undo, updateScene, playback],
+    [addLog, send, undo, updateScene, playback, currentViewScene, setView, collab.beginSequence],
   );
   const actionRef = useRef(handleAction);
   actionRef.current = handleAction;
+  const currentSceneIdForEffects = scene.id;
   useEffect(() => {
     mounted.current = true;
-    let disposed = false;
-    let timer: ReturnType<typeof setTimeout>;
-    let retries = 0;
-    const connect = () => {
-      if (disposed) return;
-      const ws = new WebSocket(
-        `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/api/session`,
-      );
-      socket.current = ws;
-      ws.onopen = () => {
-        retries = 0;
-      };
-      ws.onmessage = (e) => {
-        try {
-          const message = JSON.parse(e.data);
-          if (message.type === "ready") {
-            sendConnection({ type: "READY" });
-            snapshot();
-          }
-          if (message.type === "action") actionRef.current(message.action);
-          if (message.type === "transcript") setTranscript(message.text);
-          if (message.type === "state") setCueState(message.state);
-          if (message.type === "skipped") {
-            const served = describeServed(message.served);
-            addLog(`${message.reason}${served ? ` · ${served}` : ""}`, "skip");
-            setCueState("Skipped");
-          }
-          if (message.type === "error") {
-            addLog(message.message, "error");
-            setNotice(message.message);
-          }
-          if (message.type === "speech") {
-            if (message.state === "listening") sendInput({ type: "READY" });
-            else {
-              stopAudio.current?.();
-              stopAudio.current = null;
-              sendInput({ type: message.state === "error" ? "FAIL" : "STOP" });
-            }
-          }
-        } catch {
-          setNotice("Received an unreadable session event.");
+    const transport = collab.transport;
+    const offJson = transport.onJson((message) => {
+      if (message.type === "action") actionRef.current(message.action);
+      if (message.type === "effect") {
+        // A collaborator's temporary emphasis: rendered here, never acknowledged by this client.
+        const action = message.action;
+        if (action.sceneId === sceneIdRef.current) setEffect({ action, startedAt: Date.now(), remote: true });
+      }
+      if (message.type === "transcript") setTranscript(message.text);
+      if (message.type === "state") setCueState(message.state);
+      if (message.type === "skipped") {
+        const served = describeServed(message.served);
+        addLog(`${message.reason}${served ? ` · ${served}` : ""}`, "skip");
+        setCueState("Skipped");
+      }
+      if (message.type === "error") {
+        addLog(message.message, "error");
+        setNotice(message.message);
+      }
+      if (message.type === "speech") {
+        if (message.state === "listening") sendInput({ type: "READY" });
+        else {
+          stopAudio.current?.();
+          stopAudio.current = null;
+          sendInput({ type: message.state === "error" ? "FAIL" : "STOP" });
         }
-      };
-      ws.onclose = () => {
-        if (disposed) return;
-        cancelPlaybackRef.current();
-        sendConnection({ type: "LOST" });
-        stopAudio.current?.();
-        stopAudio.current = null;
-        audioGeneration.current++;
-        sendInput({ type: "STOP" });
-        timer = setTimeout(connect, Math.min(1000 * 2 ** retries++, 10000));
-      };
-      ws.onerror = () => ws.close();
-    };
-    connect();
+      }
+    });
+    const offClose = transport.onClose(() => {
+      cancelPlaybackRef.current();
+      stopAudio.current?.();
+      stopAudio.current = null;
+      audioGeneration.current++;
+      sendInput({ type: "STOP" });
+    });
     fetch("/api/status")
       .then((r) => (r.ok ? r.json() : Promise.reject()))
       .then(setStatus)
       .catch(() =>
         setNotice("Server unavailable. Editing and local saving still work."),
       );
-    if (!localStorage.getItem(LOCAL_KEY))
-      fetch("/api/projects/default")
-        .then((r) => (r.ok ? r.json() : Promise.reject()))
-        .then((p) => {
-          initialLoadSettled.current = true;
-          if (validProject(p) && !disposed) setProject(p);
-        })
-        .catch(() => {})
-        .finally(() => {
-          initialLoadSettled.current = true;
-        });
-    else initialLoadSettled.current = true;
     return () => {
-      disposed = true;
       mounted.current = false;
-      clearTimeout(timer);
-      socket.current?.close();
+      offJson();
+      offClose();
       stopAudio.current?.();
       audioGeneration.current++;
     };
-  }, [addLog, sendConnection, sendInput, snapshot]);
+  }, [addLog, sendInput, collab.transport]);
+  // Tell the server which scene this client is viewing and its local camera (planners position lessons relative to it).
+  // The scene ID is also carried in the next `join`; `view` itself is only sent after `joined`.
+  const setViewScene = collab.setViewScene;
+  const joinedRef = useRef(collab.joined); joinedRef.current = collab.joined;
+  const sendView = useCallback(() => {
+    if (!joinedRef.current) return false;
+    const current = currentViewScene();
+    return send({ type: "view", sceneId: current.id, ...(current.viewport ? { viewport: current.viewport } : {}), ...(current.activeAreaId ? { activeAreaId: current.activeAreaId } : {}) });
+  }, [send, currentViewScene]);
   useEffect(() => {
-    revision.current++;
+    setViewScene(currentSceneIdForEffects);
+    if (collab.joined) sendView();
+  }, [currentSceneIdForEffects, collab.joined, sendView, setViewScene]);
+  // Camera changes: trailing 150 ms debounce.
+  useEffect(() => {
+    if (!collab.joined) return;
+    const timer = setTimeout(sendView, 150);
+    return () => clearTimeout(timer);
+  }, [views, collab.joined, sendView]);
+  useEffect(() => {
     const pending=pendingBoardEffect.current;
     pendingBoardEffect.current=null;
-    setEffect(pending?.action.sceneId===scene.id && pending.action.targetId && hasTarget(scene, pending.action.targetId) ? pending : null);
-    snapshot();selfSequenceId.current=undefined;
-  }, [project, sceneIndex, snapshot]);
+    setEffect(e => e?.remote && e.action.sceneId===scene.id ? e : pending?.action.sceneId===scene.id && pending.action.targetId && hasTarget(scene, pending.action.targetId) ? pending : null);
+  }, [project, views, sceneIndex]);
+  // Fall back to the first scene when the viewed scene disappears.
+  const lastRemoteProjectChange = useRef(0), knownScenes = useRef(new Set<string>());
   useEffect(() => {
-    if (sceneIndex >= project.scenes.length)
-      setSceneIndex(project.scenes.length - 1);
-  }, [project.scenes.length, sceneIndex]);
-  useEffect(() => {
-    // Do not persist the placeholder demo locally or to the server before the stored project has been read.
-    if (!initialLoadSettled.current) return;
-    try {
-      localStorage.setItem(LOCAL_KEY, JSON.stringify(project));
-      setSaved("Saved on this device");
-    } catch {
-      setSaved("Storage full — export your project");
+    if (!project.scenes.some((s) => s.id === currentSceneId)) {
+      if (knownScenes.current.has(currentSceneId) && Date.now() - lastRemoteProjectChange.current < 2000) {
+        cancelPlaybackRef.current();
+        setNotice("A collaborator removed the scene you were viewing.");
+      }
+      setCurrentSceneId(project.scenes[0].id);
     }
-    let aborted = false;
-    const controller = new AbortController();
-    const timer = setTimeout(() => {
-      fetch(`/api/projects/${encodeURIComponent(project.id)}`, {
-        method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(project),
-        signal: controller.signal,
-      })
-        .then((r) => {
-          if (!aborted)
-            setSaved(r.ok ? "All changes saved" : "Saved on this device");
-        })
-        .catch(() => {});
-    }, 700);
-    return () => {
-      aborted = true;
-      clearTimeout(timer);
-      controller.abort();
-    };
-  }, [project]);
+    knownScenes.current = new Set(project.scenes.map((s) => s.id));
+  }, [project, currentSceneId]);
+  const onRemoteChange = collab.onRemoteChange;
+  useEffect(() => onRemoteChange((change) => {
+    if (change.project) lastRemoteProjectChange.current = Date.now();
+    if (!playbackActive.current) return;
+    const sections = change.scenes.get(sceneIdRef.current);
+    if (sections && (sections.has("objects") || sections.has("connections") || sections.has("areas") || sections.has("lesson"))) {
+      cancelPlaybackRef.current();
+      setNotice("Playback stopped: a collaborator edited this scene.");
+    }
+  }), [onRemoteChange]);
   useEffect(() => {
     if (!effect) return;
     // Animate effects also expire, so a target that never renders cannot pin the effect indefinitely.
@@ -590,29 +588,38 @@ export default function App() {
       }
       if (
         (event.metaKey || event.ctrlKey) &&
-        event.key === "z" &&
+        event.key.toLowerCase() === "z" &&
         !(event.target instanceof HTMLInputElement) &&
         !(event.target instanceof HTMLTextAreaElement)
       ) {
         event.preventDefault();
-        undo();
+        if (event.shiftKey) redo();
+        else undo();
       }
     };
     window.addEventListener("keydown", key);
     return () => window.removeEventListener("keydown", key);
-  }, [isPresenting, sendMode, undo]);
-  function changeScene(index: number) {
+  }, [isPresenting, sendMode, undo, redo]);
+  /** Switches scene by index (in the latest project) or by scene ID. */
+  function changeScene(target: number | string) {
+    if (!applyingFollow.current) setFollowingId(null);
+    const latest = projectRef.current;
+    const id = typeof target === "string" ? target : latest.scenes[Math.max(0, Math.min(target, latest.scenes.length - 1))]?.id;
+    if (!id) return;
     cancelPlaybackRef.current();
     setCanvasTool("select");
     setScenesOpen(false);setFilesOpen(false);
-    setSceneIndex(index);
+    sceneIdRef.current = id;
+    setCurrentSceneId(id);
     setSelectedId(null);
     setEffect(null);
     setTranscript("");
   }
   function submitCue(text = cue, source: "typed" | "demo" = "typed") {
     if (!text.trim()) return;
-    if (!send({ type: "cue", text: text.trim(), source, mode: mode.value })) {
+    // Plan against the camera the user is looking at right now (the debounced view may still be pending).
+    sendView();
+    if (!send({ type: "cue", text: text.trim(), source, mode: mode.value as "editing" | "rehearsing" | "presenting" })) {
       setNotice(
         "Connect the Vizli server to interpret cues. Your canvas is still editable.",
       );
@@ -631,7 +638,7 @@ export default function App() {
       setDialog("providers");
       return;
     }
-    if (!connection.matches("ready")) {
+    if (!connection.matches("ready") || !collab.joined) {
       setNotice(
         "Wait for the session to reconnect before starting your microphone.",
       );
@@ -640,19 +647,21 @@ export default function App() {
     sendInput({ type: "START" });
     const generation = ++audioGeneration.current;
     try {
+      // Audio frames use binary channel 2; the transport drops them under 128 KB of backpressure.
       const stop = await captureAudio((data) => {
-        if (
-          socket.current?.readyState === WebSocket.OPEN &&
-          socket.current.bufferedAmount < 128000
-        )
-          socket.current.send(data);
+        collab.sendAudio(new Uint8Array(data));
       });
       if (!mounted.current || generation !== audioGeneration.current) {
         stop();
         return;
       }
       stopAudio.current = stop;
-      send({ type: "listen", enabled: true });
+      if (!send({ type: "listen", enabled: true })) {
+        stopAudio.current = null;
+        stop();
+        sendInput({ type: "FAIL" });
+        setNotice("Wait for the session to reconnect before starting your microphone.");
+      }
     } catch (error) {
       sendInput({ type: "FAIL" });
       setNotice(
@@ -696,7 +705,7 @@ export default function App() {
         : {}),
       ...(src ? { src } : {}),
     };
-    updateScene({ ...scene, objects: [...scene.objects, object] });
+    updateScene({ ...scene, objects: [...scene.objects, object] }, scene);
     setSelectedId(object.id);
     setAddOpen(false);
     setDialog(null);
@@ -707,7 +716,7 @@ export default function App() {
     if(service&&object.aws){object.aws={...object.aws,service};object.label=AWS_SERVICE_LABELS[service];}
     const next=SceneSchema.safeParse({...scene,objects:[...scene.objects,object]});
     if(!next.success){setNotice('This component could not be added to the current scene.');return;}
-    updateScene(next.data);setSelectedId(object.id);setAddOpen(false);
+    updateScene(next.data, scene);setSelectedId(object.id);setAddOpen(false);
   }
   function patchObject(patch: Partial<SceneObject>) {
     if (selected)
@@ -716,13 +725,13 @@ export default function App() {
         objects: scene.objects.map((o) =>
           o.id === selected.id ? { ...o, ...patch } : o,
         ),
-      });
+      }, scene);
   }
   function switchSurface(layout:'slide'|'whiteboard') {
     if((scene.layout??'slide')===layout)return;
-    if(layout==='slide'){updateScene({...scene,layout});setCanvasTool('select');return;}
+    if(layout==='slide'){updateScene({...scene,layout},scene);setCanvasTool('select');return;}
     const area=scene.areas?.length?scene.areas:[{id:uid(),label:'Start',x:0,y:0,width:1200,height:675}];
-    updateScene({...scene,layout,viewport:scene.viewport??{x:0,y:0,zoom:1},areas:area,activeAreaId:scene.activeAreaId??area[0].id});
+    updateScene({...scene,layout,viewport:scene.viewport??{x:0,y:0,zoom:1},areas:area,activeAreaId:scene.activeAreaId??area[0].id},scene);
     setCanvasTool('pan');setSelectedId(null);setAddOpen(false);
   }
   function addScene() {
@@ -734,13 +743,12 @@ export default function App() {
       objects: [],
       connections: [],
     };
-    commit({ ...project, scenes: [...project.scenes, next] });
-    changeScene(project.scenes.length);
+    if (commit({ ...project, scenes: [...project.scenes, next] }, { base: project })) changeScene(next.id);
   }
   function addWhiteboard() {
     const areaId=uid();
     const next:Scene={id:uid(),title:"Untitled whiteboard",subtitle:"ROOM TO THINK",kind:"slide",layout:"whiteboard",objects:[],connections:[],viewport:{x:0,y:0,zoom:1},areas:[{id:areaId,label:"Start",x:0,y:0,width:1200,height:675}],activeAreaId:areaId};
-    commit({...project,scenes:[...project.scenes,next]});changeScene(project.scenes.length);sendMode({type:"EDIT"});
+    if(commit({...project,scenes:[...project.scenes,next]},{base:project}))changeScene(next.id);sendMode({type:"EDIT"});
   }
   function exportProject() {
     const url = URL.createObjectURL(
@@ -760,7 +768,7 @@ export default function App() {
       const next = JSON.parse(await file.text());
       if (!validProject(next))
         throw new Error("This file is not a supported Vizli project.");
-      commit(next);
+      commit(next, { base: project });
       changeScene(0);
       setNotice("Project imported. All objects are editable.");
     } catch (error) {
@@ -783,7 +791,7 @@ export default function App() {
           action: cueAction,
         },
       ],
-    });
+    }, { base: project });
     setCuePhrase("");
     setNotice(
       "Cue remembered. Vizli will wait for it during your presentation.",
@@ -814,6 +822,33 @@ export default function App() {
       body: "Select any object to edit it. In Rehearse, attach a phrase to that object. Present keeps the stage clean and your cues live.",
     },
   ];
+  // Presence: publish this client's scene, selection, mode, mic state and whiteboard camera; peers come from awareness.
+  const setPresence = collab.setPresence;
+  const boardCamera = scene.layout === "whiteboard" ? scene.viewport ?? null : null;
+  const cameraKey = boardCamera ? `${boardCamera.x},${boardCamera.y},${boardCamera.zoom}` : "";
+  useEffect(() => { setPresence({ sceneId: scene.id }); }, [setPresence, scene.id]);
+  useEffect(() => { setPresence({ selectedId }); }, [setPresence, selectedId]);
+  useEffect(() => { setPresence({ mode: mode.value as "editing" | "rehearsing" | "presenting" }); }, [setPresence, mode.value]);
+  const listeningNow = input.matches("listening");
+  useEffect(() => { setPresence({ listening: listeningNow }); }, [setPresence, listeningNow]);
+  useEffect(() => { setPresence({ camera: boardCamera ? { ...boardCamera } : null }); }, [setPresence, cameraKey]);
+  const publishCursor = useCursorPublisher(useCallback((cursor) => setPresence({ cursor }), [setPresence]));
+  useEffect(() => { setPresence({ cursor: null }); }, [setPresence, scene.id]);
+  const roster = collab.peers;
+  // Follow presenter: mirror the followed peer's scene and whiteboard camera; any local navigation clears it (see changeScene, onCameraChange, onNavigate).
+  useEffect(() => {
+    if (!followingId) return;
+    const peer = roster.find((p) => p.clientId === followingId);
+    if (!peer) { setFollowingId(null); return; }
+    applyingFollow.current = true;
+    try {
+      if (peer.sceneId && peer.sceneId !== sceneIdRef.current && projectRef.current.scenes.some((s) => s.id === peer.sceneId)) { changeScene(peer.sceneId); return; }
+      if (peer.camera && peer.sceneId === scene.id && scene.layout === "whiteboard") {
+        const current = getView(projectRef.current.scenes[sceneIndex]).viewport;
+        if (current.x !== peer.camera.x || current.y !== peer.camera.y || current.zoom !== peer.camera.zoom) setView(scene.id, { viewport: peer.camera });
+      }
+    } finally { applyingFollow.current = false; }
+  }, [followingId, roster, scene.id, scene.layout, sceneIndex]);
   const canvas = (
     <SceneCanvas
       fillViewport
@@ -828,11 +863,16 @@ export default function App() {
       selectable={!isPresenting}
       onSelect={setSelectedId}
       onChange={updateScene}
+      camera={getView(scene).viewport}
+      onCameraChange={viewport=>{setFollowingId(null);setView(scene.id,{viewport});}}
+      presence={collab.peerStore}
+      presenceMode={isPresenting?"presenter-only":"all"}
+      onCursor={publishCursor}
       inkTool={inkTool}
       onInkChange={updateSceneInk}
-      onApplied={(actionId) => send({ type: "applied", actionId })}
+      onApplied={(actionId) => { if (!(effectRef.current?.action.id === actionId && effectRef.current.remote)) send({ type: "applied", actionId }); }}
       onAnimationComplete={(actionId) => {
-        send({ type: "animation.completed", actionId });
+        if (!(effectRef.current?.action.id === actionId && effectRef.current.remote)) send({ type: "animation.completed", actionId });
         setEffect((e) => (e?.action.id === actionId ? null : e));
       }}
     />
@@ -844,10 +884,13 @@ export default function App() {
           <div className="floating-project">
             <a className="tiny-brand" href="#" onClick={e=>e.preventDefault()} aria-label="Vizli home">vizli<span>✳</span></a>
             <span className="floating-separator"/>
-            <div className="floating-title"><input aria-label="Project title" title={saved} value={project.title} onChange={e=>commit({...project,title:e.target.value})}/><span>{scene.title}</span></div>
+            <div className="floating-title"><input aria-label="Project title" title={saved} value={project.title} onChange={e=>commit({...project,title:e.target.value},{base:project})}/><span>{scene.title}</span></div>
             <button className={`icon-button ${scenesOpen?'active':''}`} aria-label="Open scenes" title="Scenes" aria-expanded={scenesOpen} data-testid="scenes-toggle" onClick={()=>{setScenesOpen(!scenesOpen);setFilesOpen(false);}}><Layers3 size={17}/></button>
           </div>
           <div className="floating-actions">
+            <PresenceBar status={collab.status} peers={roster} me={me} projectId={project.id} followingId={followingId}
+              onRename={(name)=>{const next=saveIdentity({name});setMe({name:next.name,color:next.color});setPresence({name:next.name});}}
+              onFollow={setFollowingId}/>
             <div className="mode-switch" aria-label="Presentation mode">
               {(["editing", "rehearsing", "presenting"] as const).map(
                 (m, i) => (
@@ -882,7 +925,7 @@ export default function App() {
             <CloudSync
               project={project}
               onLoad={(loaded) => {
-                commit(loaded);
+                commit(loaded, { base: project });
                 changeScene(0);
                 sendMode({ type: "EDIT" });
               }}
@@ -893,13 +936,12 @@ export default function App() {
                 key={scene.id}
                 whiteboard={scene.layout === "whiteboard"}
                 onCreate={(newScene) => {
-                  const current=projectRef.current.scenes[sceneIndexRef.current];
-                  if(current.layout === "whiteboard") { updateScene(appendIllustration(current,newScene));return; }
-                  commit({
+                  const current=currentViewScene();
+                  if(current.layout === "whiteboard") { updateScene(appendIllustration(current,newScene),current);return; }
+                  if (commit({
                     ...projectRef.current,
                     scenes: [...projectRef.current.scenes, newScene],
-                  });
-                  changeScene(projectRef.current.scenes.length);
+                  }, { base: projectRef.current })) changeScene(newScene.id);
                   sendMode({ type: "EDIT" });
                 }}
                 onNotice={setNotice}
@@ -1014,7 +1056,7 @@ export default function App() {
                     {(Object.keys(INK_WIDTHS) as InkWidthId[]).map((w,i)=><button key={w} className="ink-width-button" data-testid={`ink-width-${w}`} aria-label={`${w} stroke`} title={`${w} stroke`} aria-pressed={inkTool.width===w} onClick={()=>{setPenStyle(p=>({...p,width:w}));setInkTool({...inkTool,width:w});}}><span className="ink-dot" style={{width:4+i*3,height:4+i*3}}/></button>)}
                   </>}
                   <button className="icon-button" data-testid="ink-tool-eraser" aria-label="Eraser" title="Erase pen strokes" aria-pressed={inkTool?.mode==='eraser'} onClick={()=>{if(inkTool?.mode==='eraser'){setInkTool(null);return;}setInkTool({mode:'eraser'});setSelectedId(null);setCanvasTool('select');}}><Eraser size={14}/></button>
-                  <button className="icon-button" data-testid="ink-clear" aria-label="Clear ink" title="Clear all pen strokes" disabled={!scene.ink?.length} onClick={()=>updateSceneInk(clearInk(scene))}><Trash2 size={14}/></button>
+                  <button className="icon-button" data-testid="ink-clear" aria-label="Clear ink" title="Clear all pen strokes" disabled={!scene.ink?.length} onClick={()=>updateSceneInk(clearInk(scene),scene)}><Trash2 size={14}/></button>
                 </div>
                 <div className="stage-tools">
                   {!isPresenting && (
@@ -1037,8 +1079,8 @@ export default function App() {
                     data-testid="undo-button"
                     title="Undo"
                     aria-label="Undo"
-                    disabled={!historyCount && !effect}
-                    onClick={undo}
+                    disabled={!collab.undoCount && !effect}
+                    onClick={() => undo()}
                   >
                     <Undo2 size={16} />
                   </button>
@@ -1060,7 +1102,7 @@ export default function App() {
                   </button>
                 </div>
               </div>
-              {scene.layout === "whiteboard" && <WhiteboardControls scene={scene} onChange={updateScene}/>}
+              {scene.layout === "whiteboard" && <WhiteboardControls scene={scene} onNavigate={view=>{setFollowingId(null);setView(scene.id,view);}} onChange={updateScene}/>}
               <div className="stage-frame">{canvas}</div>
               {!isPresenting && (
                 <div className="canvas-controls">
@@ -1356,7 +1398,7 @@ export default function App() {
                                   c.targetId.startsWith(`${selected.id}:`))
                               ),
                           ),
-                        });
+                        }, { base: project });
                         setSelectedId(null);
                       }}
                     >
@@ -1449,7 +1491,7 @@ export default function App() {
                             cues: project.cues.filter(
                               (item) => item.id !== c.id,
                             ),
-                          })
+                          }, { base: project })
                         }
                       >
                         <Trash2 size={13} />
@@ -1655,7 +1697,7 @@ export default function App() {
                       ...scene,
                       title: sceneTitle,
                       subtitle: sceneSubtitle,
-                    });
+                    }, scene);
                     setDialog(null);
                   }}
                 >

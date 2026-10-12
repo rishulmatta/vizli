@@ -15,6 +15,7 @@ import {
   createNebiusResolver,
 } from "./resolver.js";
 import { VisualSession } from "./session.js";
+import { memorySource } from "./test-support.js";
 const project = createDemoProject();
 const aws = createPluginObject("cloud.aws", "aws-function", 100, 200),
   uml = createPluginObject("uml.class", "customer-class", 450, 200);
@@ -159,7 +160,7 @@ describe("trusted built-in plugins", () => {
     );
     const messages: any[] = [];
     const session = new VisualSession((message) => messages.push(message));
-    session.setScene(scene, 1, []);
+    memorySource(scene).attach(session);
     await session.cue("flow Lambda function");
     expect(messages.find((message) => message.type === "action")).toMatchObject(
       { action: { animation: "flow" } },

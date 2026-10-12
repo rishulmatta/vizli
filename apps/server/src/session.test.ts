@@ -1,10 +1,12 @@
 import { describe, it, expect, vi } from "vitest";
 import {
+  applyPresentationStep,
   createDemoProject,
   ProjectSchema,
   type ServerMessage,
 } from "@vizli/shared";
 import { VisualSession } from "./session.js";
+import { memorySource } from "./test-support.js";
 import { localResolve, ModelResponseError } from "./resolver.js";
 const project = createDemoProject();
 const resolve = (text: string, scene = project.scenes[0]!) =>
@@ -42,7 +44,7 @@ describe("causal cue lifecycle", () => {
   it("requires render acknowledgement before applied", async () => {
     const messages: ServerMessage[] = [];
     const s = new VisualSession((m) => messages.push(m));
-    s.setScene(project.scenes[0]!, 1, []);
+    memorySource(project.scenes[0]!).attach(s);
     await s.cue("point to revenue");
     expect(
       messages.some((m) => m.type === "state" && m.state === "applied"),
@@ -63,9 +65,11 @@ describe("causal cue lifecycle", () => {
         return { type: "point", targetId: "revenue", reason: "test" };
       },
     );
-    s.setScene(project.scenes[0]!, 1, []);
+    const src = memorySource(project.scenes[0]!);
+    src.attach(s);
     const task = s.cue("revenue");
-    s.setScene(project.scenes[1]!, 2, []);
+    src.set(project.scenes[1]!);
+    s.sync("self");
     release();
     await task;
     expect(actions(messages)).toHaveLength(0);
@@ -74,7 +78,7 @@ describe("causal cue lifecycle", () => {
   it("deduplicates interim/final cue actions", async () => {
     const messages: ServerMessage[] = [];
     const s = new VisualSession((m) => messages.push(m));
-    s.setScene(project.scenes[0]!, 1, []);
+    memorySource(project.scenes[0]!).attach(s);
     await s.cue("revenue", false, true);
     await s.cue("revenue", true, true);
     expect(actions(messages)).toHaveLength(1);
@@ -83,7 +87,7 @@ describe("causal cue lifecycle", () => {
   it("allows the same target in separate completed speaking turns", async () => {
     const messages: ServerMessage[] = [];
     const s = new VisualSession((m) => messages.push(m));
-    s.setScene(project.scenes[0]!, 1, []);
+    memorySource(project.scenes[0]!).attach(s);
     s.speech("revenue", true);
     await vi.waitFor(() => expect(actions(messages)).toHaveLength(1));
     await new Promise((r) => setTimeout(r, 0));
@@ -96,7 +100,7 @@ describe("causal cue lifecycle", () => {
     const messages: ServerMessage[] = [];
     const s = new VisualSession((m) => messages.push(m));
     try {
-      s.setScene(project.scenes[0]!, 1, []);
+      memorySource(project.scenes[0]!).attach(s);
       s.speech("revenue", false);
       await vi.advanceTimersByTimeAsync(100);
       s.speech("revenue increased", false);
@@ -119,7 +123,7 @@ describe("causal cue lifecycle", () => {
       async () => new Promise(() => {}),
     );
     try {
-      s.setScene(project.scenes[0]!, 1, []);
+      memorySource(project.scenes[0]!).attach(s);
       s.speech("revenue", false);
       s.stopSpeech();
       await vi.advanceTimersByTimeAsync(500);
@@ -149,7 +153,7 @@ describe("causal cue lifecycle", () => {
         }),
     );
     try {
-      s.setScene(project.scenes[0]!, 1, []);
+      memorySource(project.scenes[0]!).attach(s);
       const task = s.cue("highlight revenue");
       s.stopSpeech(); // e.g. the user clicks the microphone right after typing
       release();
@@ -165,7 +169,7 @@ describe("causal cue lifecycle", () => {
     const resolver = vi.fn(async () => ({ type: "skip" as const, reason: "unused" }));
     const s = new VisualSession((m) => messages.push(m), resolver);
     try {
-      s.setScene(project.scenes[0]!, 1, []);
+      memorySource(project.scenes[0]!).attach(s);
       s.speech("", true);
       s.speech("   ", true);
       await Promise.resolve();
@@ -180,7 +184,7 @@ describe("causal cue lifecycle", () => {
     const messages: ServerMessage[] = [];
     const s = new VisualSession((m) => messages.push(m));
     try {
-      s.setScene(project.scenes[0]!, 1, []);
+      memorySource(project.scenes[0]!).attach(s);
       // A completed earlier command stays dispatched across later interim revisions.
       await s.cue("point to revenue", true, true);
       const dispatched = actions(messages)[0]!.action;
@@ -216,7 +220,7 @@ describe("causal cue lifecycle", () => {
       async () => new Promise(() => {}),
     );
     try {
-      s.setScene(project.scenes[0]!, 1, []);
+      memorySource(project.scenes[0]!).attach(s);
       const task = s.cue("revenue");
       await vi.advanceTimersByTimeAsync(12001);
       await task;
@@ -237,7 +241,7 @@ describe("causal cue lifecycle", () => {
   it("does not apply persistent changes from partial speech", async () => {
     const messages: ServerMessage[] = [];
     const s = new VisualSession((m) => messages.push(m));
-    s.setScene(project.scenes[2]!, 1, []);
+    memorySource(project.scenes[2]!).attach(s);
     await s.cue("add a cache", false, true);
     expect(actions(messages)).toHaveLength(0);
     await s.cue("add a cache", true, true);
@@ -249,7 +253,7 @@ describe("causal cue lifecycle", () => {
 
 it("humanizes malformed model output at the session boundary",async()=>{
   const messages:ServerMessage[]=[];const session=new VisualSession(message=>messages.push(message),async()=>{throw new SyntaxError("Unexpected token private parser payload");});
-  try{session.setScene(project.scenes[0]!,1,[]);await session.cue("highlight revenue");const error=messages.find(message=>message.type==="error");expect(error).toEqual({type:"error",message:"I could not read that visual action. Please name the object and try again."});}finally{session.close();}
+  try{memorySource(project.scenes[0]!).attach(session);await session.cue("highlight revenue");const error=messages.find(message=>message.type==="error");expect(error).toEqual({type:"error",message:"I could not read that visual action. Please name the object and try again."});}finally{session.close();}
 });
 
 it("waits for final speech after an invalid speculative proposal, but surfaces provider failures", async () => {
@@ -261,7 +265,7 @@ it("waits for final speech after an invalid speculative proposal, but surfaces p
     .mockRejectedValueOnce(new ModelResponseError("Invalid final visual response"));
   const session = new VisualSession(message => messages.push(message), resolver);
   try {
-    session.setScene(project.scenes[0]!, 1, []);
+    memorySource(project.scenes[0]!).attach(session);
     await session.cue("highlight rev", false, true);
     expect(messages.some(message => message.type === "error")).toBe(false);
     expect(messages.some(message => message.type === "state" && message.state === "skipped")).toBe(true);
@@ -294,7 +298,7 @@ describe("Nemotron-authored lessons", () => {
     const messages: ServerMessage[] = [];
     const author = vi.fn().mockResolvedValue({ type: "sequence", sequence, reason: "Drawing DNS", served: { provider: "nebius-token-factory", model: "nvidia/Nemotron-3-Ultra-550b-a55b", tier: "reasoning", planner: "nemotron.lesson", latencyMs: 3200 } });
     const s = new VisualSession((m) => messages.push(m), async () => authorProposal, undefined, undefined, author);
-    s.setScene(board, 1, []);
+    memorySource(board).attach(s);
     await s.cue("Explain how DNS resolution works");
     expect(messages.some((m) => m.type === "state" && m.state === "planning")).toBe(true);
     const [action] = actions(messages);
@@ -308,7 +312,7 @@ describe("Nemotron-authored lessons", () => {
     const messages: ServerMessage[] = [];
     const resolver = vi.fn().mockResolvedValue(authorProposal);
     const s = new VisualSession((m) => messages.push(m), resolver);
-    s.setScene(board, 1, []);
+    memorySource(board).attach(s);
     await s.cue("Explain how DNS resolution works", false, true);
     expect(actions(messages)).toHaveLength(0);
     expect(messages.filter((m) => m.type === "skipped")).toHaveLength(0);
@@ -322,10 +326,249 @@ describe("Nemotron-authored lessons", () => {
   it("surfaces authoring failures as bounded errors without fabricating a sequence", async () => {
     const messages: ServerMessage[] = [];
     const s = new VisualSession((m) => messages.push(m), async () => authorProposal, undefined, undefined, async () => { throw new ModelResponseError("The lesson plan was cut short. Ask for a narrower topic."); });
-    s.setScene(board, 1, []);
+    memorySource(board).attach(s);
     await s.cue("Explain everything about networking");
     expect(actions(messages)).toHaveLength(0);
     expect(messages.find((m) => m.type === "error")).toMatchObject({ message: "The lesson plan was cut short. Ask for a narrower topic." });
     s.close();
+  });
+});
+
+describe("project source sync", () => {
+  const marketing = project.scenes[0]!;
+  const without = (scene: typeof marketing, id: string) => ({
+    ...scene,
+    objects: scene.objects.filter((object) => object.id !== id),
+    connections: scene.connections.filter(
+      (connection) => connection.source !== id && connection.target !== id,
+    ),
+  });
+  const stateOf = (messages: ServerMessage[], cueId: string) =>
+    messages.filter((m) => m.type === "state" && m.cueId === cueId).map((m) => m.type === "state" && m.state);
+  const deferred = () => {
+    let release!: (value: Awaited<ReturnType<typeof localResolve>>) => void;
+    let signal!: AbortSignal;
+    const resolver = vi.fn(
+      (input: { signal: AbortSignal }) =>
+        new Promise<Awaited<ReturnType<typeof localResolve>>>((resolve) => {
+          signal = input.signal;
+          release = resolve;
+        }),
+    );
+    return { resolver, release: (value: Awaited<ReturnType<typeof localResolve>>) => release(value), signal: () => signal };
+  };
+
+  it("a peer edit invalidates only the dispatched actor whose target vanished, without aborting pending interpretation", async () => {
+    const messages: ServerMessage[] = [];
+    const pending = deferred();
+    const resolver = vi
+      .fn()
+      .mockResolvedValueOnce({ type: "point", targetId: "revenue", reason: "Named revenue" })
+      .mockResolvedValueOnce({ type: "point", targetId: "acquisition", reason: "Named cost" })
+      .mockImplementationOnce(pending.resolver);
+    const s = new VisualSession((m) => messages.push(m), resolver);
+    try {
+      const src = memorySource(marketing);
+      src.attach(s);
+      await s.cue("point to revenue");
+      await s.cue("point to acquisition cost");
+      const [revenue, acquisition] = actions(messages).map((m) => m.action);
+      const task = s.cue("highlight acquisition cost");
+      await vi.waitFor(() => expect(resolver).toHaveBeenCalledTimes(3));
+      const generation = (s as unknown as { generation: number }).generation;
+      src.set(without(marketing, "revenue"));
+      s.sync("peer");
+      expect(stateOf(messages, revenue!.id)).toContain("invalidated");
+      expect(stateOf(messages, acquisition!.id)).not.toContain("invalidated");
+      expect((s as unknown as { generation: number }).generation).toBe(generation);
+      expect(pending.signal().aborted).toBe(false);
+      pending.release({ type: "highlight", targetId: "acquisition", reason: "Named cost" });
+      await task;
+      expect(actions(messages)).toHaveLength(3);
+      expect(actions(messages)[2]!.action.revision).toBe(2);
+      s.applied(acquisition!.id);
+      expect(stateOf(messages, acquisition!.id)).toContain("applied");
+    } finally {
+      s.close();
+    }
+  });
+
+  it("skips a pending cue whose target a peer deletes before dispatch", async () => {
+    const messages: ServerMessage[] = [];
+    const pending = deferred();
+    const s = new VisualSession((m) => messages.push(m), pending.resolver);
+    try {
+      const src = memorySource(marketing);
+      src.attach(s);
+      const task = s.cue("highlight revenue");
+      await vi.waitFor(() => expect(pending.resolver).toHaveBeenCalled());
+      src.set(without(marketing, "revenue"));
+      s.sync("peer");
+      pending.release({ type: "highlight", targetId: "revenue", reason: "Named revenue" });
+      await task;
+      expect(actions(messages)).toHaveLength(0);
+      expect(messages).toContainEqual({
+        type: "skipped",
+        reason: "The scene changed while I was interpreting that; say it again.",
+      });
+    } finally {
+      s.close();
+    }
+  });
+
+  it("dispatches against the live scene when a peer edit leaves the target intact", async () => {
+    const messages: ServerMessage[] = [];
+    const pending = deferred();
+    const s = new VisualSession((m) => messages.push(m), pending.resolver);
+    try {
+      const src = memorySource(marketing);
+      src.attach(s);
+      const task = s.cue("highlight revenue");
+      await vi.waitFor(() => expect(pending.resolver).toHaveBeenCalled());
+      src.set({ ...marketing, title: "Renamed by a peer" });
+      s.sync("peer");
+      pending.release({ type: "highlight", targetId: "revenue", reason: "Named revenue" });
+      await task;
+      expect(actions(messages)).toHaveLength(1);
+      expect(actions(messages)[0]!.action.revision).toBe(2);
+    } finally {
+      s.close();
+    }
+  });
+
+  it("view to another scene fully invalidates, and unknown scene IDs fall back to the first scene", async () => {
+    const messages: ServerMessage[] = [];
+    const pending = deferred();
+    const resolver = vi
+      .fn()
+      .mockResolvedValueOnce({ type: "point", targetId: "revenue", reason: "Named revenue" })
+      .mockImplementationOnce(pending.resolver)
+      .mockImplementation(async (input: Parameters<typeof localResolve>[0]) => localResolve(input));
+    const s = new VisualSession((m) => messages.push(m), resolver);
+    try {
+      s.attach({ project, version: 1 }, project.scenes[0]!.id);
+      await s.cue("point to revenue");
+      const dispatched = actions(messages)[0]!.action;
+      const task = s.cue("highlight revenue");
+      await vi.waitFor(() => expect(resolver).toHaveBeenCalledTimes(2));
+      s.view(project.scenes[1]!.id);
+      expect(stateOf(messages, dispatched.id)).toContain("invalidated");
+      expect(pending.signal().aborted).toBe(true);
+      pending.release({ type: "highlight", targetId: "revenue", reason: "late" });
+      await task;
+      expect(actions(messages)).toHaveLength(1);
+      await s.cue("highlight second row of matrix A");
+      expect(actions(messages)[1]!.action).toMatchObject({ sceneId: project.scenes[1]!.id, targetId: "matrix-a:row:1" });
+      s.view("no-such-scene");
+      expect(stateOf(messages, actions(messages)[1]!.action.id)).toContain("invalidated");
+      await s.cue("point to revenue");
+      expect(actions(messages)[2]!.action.sceneId).toBe(project.scenes[0]!.id);
+    } finally {
+      s.close();
+    }
+  });
+
+  it("clearScene skips cues until a project is attached again", async () => {
+    const messages: ServerMessage[] = [];
+    const s = new VisualSession((m) => messages.push(m));
+    try {
+      memorySource(marketing).attach(s);
+      s.clearScene();
+      await s.cue("point to revenue");
+      expect(messages).toContainEqual({ type: "skipped", reason: "Choose a scene before giving a cue." });
+      memorySource(marketing).attach(s);
+      await s.cue("point to revenue");
+      expect(actions(messages)).toHaveLength(1);
+    } finally {
+      s.close();
+    }
+  });
+
+  describe("sequence ownership", () => {
+    const board = marketing;
+    const sequence = {
+      id: "owned-lesson",
+      domain: "nemotron.lesson",
+      sourceIds: ["revenue"],
+      steps: [
+        { id: "s0", type: "insert" as const, objects: [{ id: "owned-a", kind: "node" as const, label: "Browser", x: 40, y: 400, width: 200, height: 100 }], durationMs: 300 },
+        { id: "s1", type: "insert" as const, objects: [{ id: "owned-b", kind: "node" as const, label: "Resolver", x: 300, y: 400, width: 200, height: 100 }], connections: [{ id: "owned-a-b", source: "owned-a", target: "owned-b" }], durationMs: 300 },
+      ],
+    };
+    const start = async () => {
+      const messages: ServerMessage[] = [];
+      const s = new VisualSession(
+        (m) => messages.push(m),
+        async () => ({ type: "author_lesson" as const, prompt: "Explain DNS", reason: "Teaching request" }),
+        undefined,
+        undefined,
+        async () => ({ type: "sequence" as const, sequence, reason: "Drawing DNS" }),
+      );
+      const src = memorySource(board);
+      src.attach(s);
+      await s.cue("Explain DNS");
+      const action = actions(messages)[0]!.action;
+      expect(action.type).toBe("sequence");
+      return { messages, s, src, action };
+    };
+
+    it("preserves the sequence acknowledgement across self commits interleaved with a peer ink stroke", async () => {
+      const { messages, s, src, action } = await start();
+      try {
+        const first = applyPresentationStep(board, sequence.steps[0]!);
+        src.set(first);
+        s.sync("self");
+        const inked = { ...first, ink: [{ id: "peer-stroke", color: "#e11d48", width: 4, points: [10, 10, 60, 60] }] };
+        src.set(inked);
+        s.sync("peer");
+        src.set(applyPresentationStep(inked, sequence.steps[1]!));
+        s.sync("self");
+        s.applied(action.id);
+        s.complete(action.id);
+        expect(stateOf(messages, action.id)).not.toContain("invalidated");
+        expect(stateOf(messages, action.id)).toEqual(expect.arrayContaining(["applied", "completed"]));
+      } finally {
+        s.close();
+      }
+    });
+
+    it("invalidates dispatched actors when a self commit changes an object the sequence does not own", async () => {
+      const { messages, s, src, action } = await start();
+      try {
+        const first = applyPresentationStep(board, sequence.steps[0]!);
+        src.set({
+          ...first,
+          objects: first.objects.map((object) =>
+            object.id === "revenue" ? { ...object, label: "Edited revenue" } : object,
+          ),
+        });
+        s.sync("self");
+        expect(stateOf(messages, action.id)).toContain("invalidated");
+        s.applied(action.id);
+        expect(stateOf(messages, action.id)).not.toContain("applied");
+      } finally {
+        s.close();
+      }
+    });
+
+    it("invalidates a sequence when a peer deletes an object it depends on", async () => {
+      const { messages, s, src, action } = await start();
+      try {
+        const first = applyPresentationStep(board, sequence.steps[0]!);
+        src.set(first);
+        s.sync("self");
+        expect(stateOf(messages, action.id)).not.toContain("invalidated");
+        // owned-a did not exist at dispatch, so a peer removing it is not a dependency loss.
+        src.set(without(first, "owned-a"));
+        s.sync("peer");
+        expect(stateOf(messages, action.id)).not.toContain("invalidated");
+        // revenue is a declared source object; a peer deleting it breaks the sequence.
+        src.set(without(without(first, "owned-a"), "revenue"));
+        s.sync("peer");
+        expect(stateOf(messages, action.id)).toContain("invalidated");
+      } finally {
+        s.close();
+      }
+    });
   });
 });

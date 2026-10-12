@@ -1,7 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type RefObject } from 'react';
 import { useMachine } from '@xstate/react';
 import { createMachine } from 'xstate';
-import type { Scene } from '@vizli/shared';
 
 export type Camera = { x: number; y: number; zoom: number };
 const limit = (n: number, min: number, max: number) => Math.max(min, Math.min(max, n));
@@ -17,45 +16,49 @@ export function zoomAt(camera: Camera, zoom: number, x: number, y: number): Came
   const next = limit(zoom, .25, 2);
   return { x: limit(camera.x + x / camera.zoom - x / next, -1e6, 1e6), y: limit(camera.y + y / camera.zoom - y / next, -1e6, 1e6), zoom: next };
 }
-export function useBoardCamera(scene: Scene, scale: number, container: RefObject<HTMLDivElement | null>, onChange: (scene: Scene) => void, viewportHeight = 675, playback?: {paused: boolean; durationMs?: number}) {
+/**
+ * Controlled camera: `target` is the caller's per-user view, `onCameraChange` receives finished gestures.
+ * The hook never touches scene data; transient gesture/easing state stays local.
+ */
+export function useBoardCamera(target: Camera, scale: number, container: RefObject<HTMLDivElement | null>, onCameraChange: (camera: Camera) => void, viewportHeight = 675, playback: {paused: boolean; durationMs?: number} | undefined, sceneId: string, enabled: boolean) {
   const playbackRef = useRef(playback); playbackRef.current = playback;
-  const enabled = scene.layout === 'whiteboard';
   const [navigation, sendNavigation] = useMachine(navigationMachine);
   const [local, setLocal] = useState<Camera | null>(null);
   const [space, setSpace] = useState(false);
   const hovered = useRef(false);
-  const sceneRef = useRef(scene); sceneRef.current = scene;
-  const changeRef = useRef(onChange); changeRef.current = onChange;
-  const camera = local ?? scene.viewport ?? { x: 0, y: 0, zoom: 1 };
+  const targetRef = useRef(target); targetRef.current = target;
+  const sceneRef = useRef({ id: sceneId, enabled }); sceneRef.current = { id: sceneId, enabled };
+  const changeRef = useRef(onCameraChange); changeRef.current = onCameraChange;
+  const camera = local ?? target;
   const cameraRef = useRef(camera);
-  const previousScene = useRef(scene.id);
+  const previousScene = useRef(sceneId);
   const cameraFrame = useRef<number | undefined>(undefined);
   const hadPlayback = useRef(Boolean(playback));
   useLayoutEffect(() => {
     if (hadPlayback.current && !playback && cameraFrame.current !== undefined) {
       cancelAnimationFrame(cameraFrame.current); cameraFrame.current = undefined;
-      cameraRef.current = sceneRef.current.viewport ?? {x:0,y:0,zoom:1}; setLocal(null);
+      cameraRef.current = targetRef.current; setLocal(null);
     }
     hadPlayback.current = Boolean(playback);
   }, [Boolean(playback)]);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const gestureCleanup = useRef<(() => void) | null>(null);
   const update = (next: Camera) => { cameraRef.current = next; setLocal(next); };
-  const commit = (next: Camera, sceneId: string) => {
+  const commit = (next: Camera, id: string) => {
     clearTimeout(timer.current); timer.current = undefined;
-    if (sceneRef.current.id !== sceneId || sceneRef.current.layout !== 'whiteboard') return;
-    const previous = sceneRef.current.viewport ?? { x: 0, y: 0, zoom: 1 };
-    if (previous.x !== next.x || previous.y !== next.y || previous.zoom !== next.zoom) changeRef.current({ ...sceneRef.current, viewport: next });
+    if (sceneRef.current.id !== id || !sceneRef.current.enabled) return;
+    const previous = targetRef.current;
+    // TODO(collab): publish `next` as this user's presence camera here.
+    if (previous.x !== next.x || previous.y !== next.y || previous.zoom !== next.zoom) changeRef.current(next);
     sendNavigation({ type: 'END' });
   };
   useLayoutEffect(() => {
     clearTimeout(timer.current); gestureCleanup.current?.();
     if (cameraFrame.current !== undefined) cancelAnimationFrame(cameraFrame.current);
     sendNavigation({ type: 'CANCEL' });
-    const target = scene.viewport ?? { x: 0, y: 0, zoom: 1 };
     const start = cameraRef.current;
-    const changedScene = previousScene.current !== scene.id;
-    previousScene.current = scene.id;
+    const changedScene = previousScene.current !== sceneId;
+    previousScene.current = sceneId;
     if (!enabled || changedScene || window.matchMedia('(prefers-reduced-motion: reduce)').matches || (start.x === target.x && start.y === target.y && start.zoom === target.zoom)) {
       cameraRef.current = target; setLocal(null); return;
     }
@@ -74,7 +77,7 @@ export function useBoardCamera(scene: Scene, scale: number, container: RefObject
     };
     cameraFrame.current = requestAnimationFrame(tick);
     return () => { if (cameraFrame.current !== undefined) cancelAnimationFrame(cameraFrame.current); };
-  }, [scene.id, scene.viewport?.x, scene.viewport?.y, scene.viewport?.zoom, enabled]);
+  }, [sceneId, target.x, target.y, target.zoom, enabled]);
   useEffect(() => () => { clearTimeout(timer.current); gestureCleanup.current?.(); if (cameraFrame.current !== undefined) cancelAnimationFrame(cameraFrame.current); }, []);
   useEffect(() => {
     if (!enabled) { setSpace(false); return; }
@@ -113,7 +116,7 @@ export function useBoardCamera(scene: Scene, scale: number, container: RefObject
     event.preventDefault(); event.stopPropagation(); clearTimeout(timer.current);
     if (cameraFrame.current !== undefined) cancelAnimationFrame(cameraFrame.current);
     sendNavigation({ type: 'PAN' });
-    const original = cameraRef.current, id = scene.id;
+    const original = cameraRef.current, id = sceneId;
     const start = { x: event.clientX, y: event.clientY };
     const element = event.currentTarget; element.setPointerCapture(event.pointerId);
     const move = (e: PointerEvent) => {
@@ -126,7 +129,7 @@ export function useBoardCamera(scene: Scene, scale: number, container: RefObject
     gestureCleanup.current = clean;
     element.addEventListener('pointermove', move); element.addEventListener('pointerup', end); element.addEventListener('pointercancel', cancel); element.addEventListener('lostpointercapture', cancel); window.addEventListener('blur', cancel);
   };
-  const zoom = (factor: number) => { const next = zoomAt(cameraRef.current, cameraRef.current.zoom * factor, 600, viewportHeight / 2); update(next); commit(next, scene.id); };
-  const reset = () => { const next = { x: 0, y: 0, zoom: 1 }; update(next); commit(next, scene.id); };
+  const zoom = (factor: number) => { const next = zoomAt(cameraRef.current, cameraRef.current.zoom * factor, 600, viewportHeight / 2); update(next); commit(next, sceneId); };
+  const reset = () => { const next = { x: 0, y: 0, zoom: 1 }; update(next); commit(next, sceneId); };
   return { camera, navigation: String(navigation.value), space, beginPan, zoom, reset };
 }

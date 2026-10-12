@@ -11,7 +11,7 @@ export type UsageLimits = {
   llmHourly: number;
   llmConcurrent: number;
 };
-const limit = (value: string | undefined, fallback: number) =>
+export const limit = (value: string | undefined, fallback: number) =>
   value !== undefined &&
   /^\d+$/.test(value) &&
   Number.isSafeInteger(Number(value))

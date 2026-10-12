@@ -19,6 +19,7 @@ import {
 } from "@xyflow/react";
 import {
   resolveImageAnchor,
+  type BoardViewport,
   type Scene,
   type SceneObject,
   type Effect,
@@ -34,6 +35,8 @@ import { useBoardCamera } from "./useBoardCamera";
 import PresentationLayer, { type PresentationFrame } from "./PresentationLayer";
 import BoardBackdrop, { isNearCamera } from "./BoardBackdrop";
 import InkLayer from "./InkLayer";
+import PresenceLayer, { type PresenceMode } from "./PresenceLayer";
+import type { PeerStore } from "../collab/useCollabDoc";
 
 type Props = {
   scene: Scene;
@@ -47,13 +50,22 @@ type Props = {
   onPresentationComplete?: (token: string) => void;
   onPresentationError?: (token: string, reason: string) => void;
   onSelect: (id: string | null) => void;
-  onChange: (scene: Scene) => void;
+  /** `base` is the scene snapshot the edit was derived from (three-way commit into the shared document). */
+  onChange: (scene: Scene, base: Scene) => void;
+  /** Per-user whiteboard camera (local view state, not part of the shared scene). */
+  camera: BoardViewport;
+  onCameraChange: (camera: BoardViewport) => void;
   onApplied?: (actionId: string) => void;
   onAnimationComplete?: (actionId: string) => void;
   /** Active presenter ink tool. `null` (default) renders ink without capturing pointer input. */
   inkTool?: InkTool | null;
   /** Commit path for ink mutations; falls back to `onChange` when omitted. */
-  onInkChange?: (scene: Scene) => void;
+  onInkChange?: (scene: Scene, base: Scene) => void;
+  /** Remote peers to render (cursors, selections). Omitted: no presence layer. */
+  presence?: PeerStore;
+  presenceMode?: PresenceMode;
+  /** Local pointer in scene coordinates (slide logical px / whiteboard world px); `null` when it leaves the stage. */
+  onCursor?: (point: { x: number; y: number } | null) => void;
 };
 type Bounds = { x: number; y: number; width: number; height: number };
 const clamp = (n: number, low: number, high: number) =>
@@ -100,10 +112,15 @@ export default function SceneCanvas({
   onPresentationError,
   onSelect,
   onChange,
+  camera: cameraGoal,
+  onCameraChange,
   onApplied,
   onAnimationComplete,
   inkTool = null,
   onInkChange,
+  presence,
+  presenceMode = "all",
+  onCursor,
 }: Props) {
   const container = useRef<HTMLDivElement>(null);
   const stage = useRef<HTMLDivElement>(null);
@@ -118,7 +135,7 @@ export default function SceneCanvas({
   const stageOffset = fillViewport && !isBoard
     ? { left: (surfaceSize.width - 1200 * scale) / 2, top: (surfaceSize.height - 675 * scale) / 2 }
     : { left: 0, top: 0 };
-  const board = useBoardCamera(scene, scale, container, onChange, viewportHeight, presentation ? {paused: presentation.paused, durationMs: presentation.step.type === "camera" ? presentation.step.durationMs : undefined} : undefined);
+  const board = useBoardCamera(cameraGoal, scale, container, onCameraChange, viewportHeight, presentation ? {paused: presentation.paused, durationMs: presentation.step.type === "camera" ? presentation.step.durationMs : undefined} : undefined, scene.id, isBoard);
   const camera = board.camera;
   const [bounds, setBounds] = useState<Bounds | null>(null);
   const [expired, setExpired] = useState<string | null>(null);
@@ -319,13 +336,14 @@ export default function SceneCanvas({
       if (surface.hasPointerCapture(e.pointerId))
         surface.releasePointerCapture(e.pointerId);
       setDraft(null);
-      if (sceneRef.current.id === originalSceneId && updated !== object)
+      const base = sceneRef.current;
+      if (base.id === originalSceneId && updated !== object)
         onChange({
-          ...sceneRef.current,
-          objects: sceneRef.current.objects.map((o) =>
+          ...base,
+          objects: base.objects.map((o) =>
             o.id === object.id ? updated : o,
           ),
-        });
+        }, base);
     };
     const cancel = (e: PointerEvent) => {
       updated = object;
@@ -391,7 +409,7 @@ export default function SceneCanvas({
           target: connection.target,
         },
       ],
-    });
+    }, scene);
   };
   const autoLayout = async () => {
     setLayoutBusy(true);
@@ -429,7 +447,7 @@ export default function SceneCanvas({
               }
             : o;
         }),
-      });
+      }, scene);
     } catch {
       setLayoutError("Could not arrange this diagram. Move nodes manually.");
     } finally {
@@ -455,6 +473,15 @@ export default function SceneCanvas({
         ref={stage}
         style={{ transform: `scale(${scale})`, height: viewportHeight, ...stageOffset, ...(isBoard ? { backgroundImage: 'radial-gradient(#b9cbb5 1px, transparent 1px)', backgroundSize: `${24 * camera.zoom}px ${24 * camera.zoom}px`, backgroundPosition: `${-camera.x * camera.zoom}px ${-camera.y * camera.zoom}px` } : {}) }}
         tabIndex={isBoard ? 0 : undefined}
+        onPointerMove={onCursor ? (event) => {
+          const rect = stage.current?.getBoundingClientRect();
+          if (!rect) return;
+          const lx = (event.clientX - rect.left) / scale;
+          const ly = (event.clientY - rect.top) / scale;
+          const point = isBoard ? { x: camera.x + lx / camera.zoom, y: camera.y + ly / camera.zoom } : { x: lx, y: ly };
+          onCursor({ x: Math.round(point.x * 10) / 10, y: Math.round(point.y * 10) / 10 });
+        } : undefined}
+        onPointerLeave={onCursor ? () => onCursor(null) : undefined}
         onPointerDownCapture={(event) => {
           if (!event.isPrimary || (event.button !== 0 && event.button !== 1)) return;
           panGesture.current = false;
@@ -546,7 +573,7 @@ export default function SceneCanvas({
                         }
                       : o,
                   ),
-                });
+                }, scene);
               }}
               deleteKeyCode={null}
               proOptions={{ hideAttribution: true }}
@@ -641,7 +668,8 @@ export default function SceneCanvas({
           stage={stage}
           onCommit={onInkChange ?? onChange}
         />
-        {presentation && <PresentationLayer frame={presentation} stage={stage} scale={scale} scene={scene} camera={camera} viewportHeight={viewportHeight} onComplete={onPresentationComplete} onError={onPresentationError} />}
+        {presence && <PresenceLayer scene={scene} store={presence} presenceMode={presenceMode} isBoard={isBoard} camera={camera} viewportHeight={viewportHeight} />}
+        {presentation && <PresentationLayer frame={presentation} stage={stage} scale={scale} scene={scene} camera={camera} cameraGoal={cameraGoal} viewportHeight={viewportHeight} onComplete={onPresentationComplete} onError={onPresentationError} />}
         {!isBoard && !fillViewport && <footer className="viz-scene-footer">
           <span>
             VIZLI <i> / </i> IDEAS, IN MOTION.

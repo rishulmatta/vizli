@@ -1,4 +1,4 @@
-import {selectScene, newWhiteboard} from "./ui";
+import {selectScene, newWhiteboard, savedViewport} from "./ui";
 import { test, expect, type Page } from "@playwright/test";
 import { createDemoProject, type Scene } from "../packages/shared/src/index";
 
@@ -66,7 +66,8 @@ test("whiteboard camera and area names persist and zoomed editing uses world coo
   expect(original.x).toBeGreaterThanOrEqual(1320);
   await page.getByTestId("board-zoom-in").click();
   await expect.poll(async () => Number(await canvas.getAttribute("data-camera-zoom"))).toBeGreaterThan(1);
-  const camera = (await currentBoard(page)).viewport!;
+  await expect.poll(async () => (await savedViewport(page, board.id)).zoom).toBeGreaterThan(1);
+  const camera = await savedViewport(page, board.id);
   const object = page.locator(`[data-object-id="${original.id}"]`);
   await object.scrollIntoViewIfNeeded();
   const box = (await object.boundingBox())!, canvasBox = (await canvas.boundingBox())!;
@@ -77,10 +78,11 @@ test("whiteboard camera and area names persist and zoomed editing uses world coo
   await page.mouse.up();
   await expect.poll(async () => (await currentBoard(page)).objects[0]!.x).toBeCloseTo(original.x + movement / (canvasBox.width / 1200 * camera.zoom), 0);
   const saved = await currentBoard(page);
+  const savedCamera = await savedViewport(page, board.id);
   await page.reload();
   await selectScene(page,board.id);
   await expect(canvas).toHaveAttribute("data-layout", "whiteboard");
-  expect((await currentBoard(page)).viewport).toEqual(saved.viewport);
+  expect(await savedViewport(page, board.id)).toEqual(savedCamera);
   expect((await currentBoard(page)).areas?.some(area => area.label === "Database")).toBe(true);
   await cue(page, "go to Start");
   await expect(canvas).toHaveAttribute("data-camera-x", "0");

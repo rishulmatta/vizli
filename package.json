@@ -18,5 +18,10 @@
     "@playwright/test": "^1.56.0",
     "concurrently": "^9.2.1",
     "typescript": "^5.9.3"
+  },
+  "pnpm": {
+    "overrides": {
+      "yjs": "13.6.33"
+    }
   }
 }

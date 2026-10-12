@@ -14,6 +14,7 @@ import {
 import { planDomainPresentation } from "./index.js";
 import { multiplyMatrixCells } from "./math.js";
 import { VisualSession } from "../session.js";
+import { memorySource } from "../test-support.js";
 const blank = (): Scene => ({
   ...createDemoProject().scenes[2]!,
   id: "lesson-board",
@@ -223,7 +224,8 @@ describe("reusable narrated matrix presentation", () => {
   it("suppresses partial creations and preserves own sequence acknowledgement across validated self-commits", async () => {
     const messages: ServerMessage[] = [];
     const session = new VisualSession((message) => messages.push(message));
-    session.setScene(blank(), 1, []);
+    const src = memorySource(blank());
+    src.attach(session);
     await session.cue("today we will learn matrix multiplication", false, true);
     expect(messages.some((message) => message.type === "action")).toBe(false);
     await session.cue("today we will learn matrix multiplication", true, true);
@@ -232,11 +234,11 @@ describe("reusable narrated matrix presentation", () => {
     if (action?.type !== "action" || !action.action.sequence)
       throw new Error("missing action");
     const sequence = action.action.sequence;
-    let state = blank(),
-      revision = 1;
+    let state = blank();
     for (const step of sequence.steps) {
       state = applyPresentationStep(state, step);
-      session.setScene(state, ++revision, [], sequence.id);
+      src.set(state);
+      session.sync("self");
     }
     session.applied(action.action.id);
     session.complete(action.action.id);

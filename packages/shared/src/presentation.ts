@@ -8,15 +8,41 @@ import {
   type PresentationStep,
   type PresentationSequence,
 } from "./index.js";
-/** Exact serialized source snapshot: private to the project, never executable. */
+/** JSON with recursively sorted keys and `undefined` dropped, so replicas with different key order agree. */
+export function stableJson(value: unknown): string {
+  return JSON.stringify(sortKeys(value));
+}
+function sortKeys(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortKeys);
+  if (value && typeof value === "object" && Object.getPrototypeOf(value) === Object.prototype) {
+    const out: Record<string, unknown> = {};
+    for (const key of Object.keys(value as object).sort()) {
+      const inner = (value as Record<string, unknown>)[key];
+      if (inner !== undefined) out[key] = sortKeys(inner);
+    }
+    return out;
+  }
+  return value;
+}
+/** Exact serialized source snapshot: private to the project, never executable. Key order does not matter. */
 export function sequenceSourceSignature(scene: Scene, ids: string[]): string {
-  return JSON.stringify(
+  return stableJson(
     ids.map((id) => {
       const object = scene.objects.find((object) => object.id === id);
       if (!object) throw new Error("A sequence source object is missing.");
       return object;
     }),
   );
+}
+/** Signatures written before stable ordering are re-normalized so existing projects are not marked stale. */
+export function sameSignature(stored: string | undefined, current: string): boolean {
+  if (stored === current) return true;
+  if (!stored) return false;
+  try {
+    return stableJson(JSON.parse(stored)) === current;
+  } catch {
+    return false;
+  }
 }
 export function applyPresentationStep(
   scene: Scene,
@@ -30,7 +56,7 @@ export function applyPresentationStep(
       for (const object of step.objects) {
         const previous = objects.find((existing) => existing.id === object.id);
         if (previous) {
-          if (JSON.stringify(previous) !== JSON.stringify(object))
+          if (stableJson(previous) !== stableJson(object))
             throw new Error(
               "Sequence insertion would replace an existing object.",
             );
@@ -47,7 +73,7 @@ export function applyPresentationStep(
           (existing) => existing.id === connection.id,
         );
         if (previous) {
-          if (JSON.stringify(previous) !== JSON.stringify(connection))
+          if (stableJson(previous) !== stableJson(connection))
             throw new Error("Sequence insertion would replace a connection.");
         } else connections.push(connection);
       }
@@ -128,8 +154,10 @@ export function validatePresentationSequence(
   const sequence = PresentationSequenceSchema.parse(input);
   if (
     sequence.sourceSignature &&
-    sequenceSourceSignature(scene, sequence.sourceIds ?? []) !==
-      sequence.sourceSignature
+    !sameSignature(
+      sequence.sourceSignature,
+      sequenceSourceSignature(scene, sequence.sourceIds ?? []),
+    )
   )
     throw new Error("Source objects changed. Ask for the demonstration again.");
   let snapshot = scene;
@@ -149,7 +177,7 @@ export function invalidateDerivedResults(scene: Scene): Scene {
     } catch {
       current = "missing";
     }
-    if (current === object.derivedFrom.sourceSignature) return object;
+    if (sameSignature(object.derivedFrom.sourceSignature, current)) return object;
     stale = true;
     const { math: _math, ...rest } = object;
     return { ...rest, hidden: true };

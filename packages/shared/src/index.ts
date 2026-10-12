@@ -3,6 +3,7 @@ import { invalidateDerivedResults } from "./presentation.js";
 import { objectTargets } from "./plugins.js";
 export * from "./plugins.js";
 export * from "./attention.js";
+export * from "./ydoc.js";
 import {
   MotionPresetSchema,
   pluginFields,
@@ -467,23 +468,41 @@ export type SceneConnection = z.infer<typeof SceneConnectionSchema>;
 export type Scene = z.infer<typeof SceneSchema>;
 export type Project = z.infer<typeof ProjectSchema>;
 export type VisualAction = z.infer<typeof VisualActionSchema>;
-export type Effect = { action: VisualAction; startedAt: number };
+export type Effect = {
+  action: VisualAction;
+  startedAt: number;
+  /** Started by another collaborator; rendered locally but not acknowledged to the server. */
+  remote?: boolean;
+};
 export const ClientMessageSchema = z.discriminatedUnion("type", [
-  z
-    .object({
-      type: z.literal("scene"),
-      scene: SceneSchema,
-      revision: z.number().int().nonnegative(),
-      cues: z.array(CueSchema).max(1000),
-      sequenceId: id.optional(),
-    })
-    .strict(),
   z
     .object({
       type: z.literal("cue"),
       text: z.string().min(1).max(4000),
       source: z.enum(["typed", "demo"]),
       mode: z.enum(["editing", "rehearsing", "presenting"]),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("join"),
+      projectId: id,
+      userId: id,
+      clientId: id,
+      name: z.string().min(1).max(80),
+      color: AttentionColorSchema,
+      sceneId: id.optional(),
+      seed: ProjectSchema.optional(),
+      token: z.string().max(2000).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("view"),
+      sceneId: id,
+      // The viewer's own camera; it is not shared state but planners position lesson objects relative to it.
+      viewport: BoardViewportSchema.optional(),
+      activeAreaId: id.optional(),
     })
     .strict(),
   z.object({ type: z.literal("listen"), enabled: z.boolean() }).strict(),
@@ -498,7 +517,9 @@ export type ServerMessage =
   | { type: "state"; state: string; cueId?: string }
   | { type: "action"; action: VisualAction }
   | { type: "skipped"; reason: string; served?: ServedBy }
-  | { type: "error"; message: string }
+  | { type: "error"; message: string; code?: string }
+  | { type: "joined"; projectId: string; docId: string; version: number }
+  | { type: "effect"; action: VisualAction; clientId: string; name: string }
   | { type: "speech"; state: "listening" | "off" | "error" };
 export function targetIds(scene: Scene): string[] {
   return scene.objects.flatMap((object) =>

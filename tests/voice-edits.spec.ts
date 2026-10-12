@@ -1,4 +1,4 @@
-import {selectScene} from "./ui";
+import {proxySession, selectScene} from "./ui";
 import { test, expect, type Page } from '@playwright/test';
 import { createDemoProject, type Scene } from '../packages/shared/src/index';
 async function matrix(page: Page) {
@@ -8,17 +8,13 @@ test('voice edit actions amend the same matrix atomically, remain targetable, an
   const project=createDemoProject();project.id=`e2e-voice-edit-${crypto.randomUUID()}`;
   await page.addInitScript(p=>{if(!localStorage.getItem('vizli.project.v1'))localStorage.setItem('vizli.project.v1',JSON.stringify(p));},project);
   // Exercise the real browser action boundary without spending provider credits.
-  await page.routeWebSocket('**/api/session', socket => {
-    let scene:Scene,revision:number;let count=0;
-    socket.send(JSON.stringify({type:'ready',mode:'demo'}));
-    socket.onMessage(raw=>{
-      const m=JSON.parse(String(raw));
-      if(m.type==='scene'){scene=m.scene;revision=m.revision;}
+  let count=0;
+  await proxySession(page,(m,session)=>{
       if(m.type!=='cue')return;
       const patches:Record<string,unknown>={resize:{matrix:{rows:3,cols:2}},cell:{cell:{row:2,col:1,value:9}},invalid:{cell:{row:9,col:1,value:8}},shrink:{matrix:{rows:1,cols:2}}};
       const action=m.text==='highlight'?{type:'highlight',targetId:'matrix-a:cell:2:1'}:{type:'edit_object',targetId:'matrix-a',patch:patches[m.text]};
-      socket.send(JSON.stringify({type:'action',action:{id:`edit-${++count}`,sceneId:scene.id,revision,reason:'Update requested object',...action}}));
-    });
+      session.reply({type:'action',action:{id:`edit-${++count}`,sceneId:session.sceneId,revision:0,reason:'Update requested object',...action}});
+      return true;
   });
   await page.goto('/');await selectScene(page,"mathematics");
   const original=await matrix(page);

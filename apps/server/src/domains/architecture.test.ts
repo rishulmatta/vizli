@@ -11,6 +11,7 @@ import {
 } from "@vizli/shared";
 import { planDomainPresentation } from "./index.js";
 import { VisualSession } from "../session.js";
+import { memorySource } from "../test-support.js";
 
 const blank = (): Scene => ({
   ...createDemoProject().scenes[2]!,
@@ -208,8 +209,8 @@ describe("incremental AWS architecture narration", () => {
     const messages: ServerMessage[] = [];
     const session = new VisualSession((message) => messages.push(message));
     let scene = blank();
-    let revision = 1;
-    session.setScene(scene, revision, []);
+    const src = memorySource(scene);
+    src.attach(session);
     await session.cue("A client invokes the API");
     const first = [...messages].reverse().find((message) => message.type === "action");
     expect(first?.type).toBe("action");
@@ -218,7 +219,8 @@ describe("incremental AWS architecture narration", () => {
     expect(messages.filter((message) => message.type === "action")).toHaveLength(1);
 
     scene = apply(scene, first.action.sequence);
-    session.setScene(scene, ++revision, [], first.action.sequence.id);
+    src.set(scene);
+    session.sync("self");
     session.applied(first.action.id);
     session.complete(first.action.id);
     await vi.waitFor(() =>
@@ -228,7 +230,8 @@ describe("incremental AWS architecture narration", () => {
     expect(second.type).toBe("action");
     if (second.type !== "action" || !second.action.sequence) throw new Error("Missing queued stage");
     scene = apply(scene, second.action.sequence);
-    session.setScene(scene, ++revision, [], second.action.sequence.id);
+    src.set(scene);
+    session.sync("self");
     session.applied(second.action.id);
     session.complete(second.action.id);
     session.close();
@@ -238,7 +241,8 @@ describe("incremental AWS architecture narration", () => {
     const slide = { ...blank(), layout: "slide" as const, viewport: undefined };
     const messages: ServerMessage[] = [];
     const session = new VisualSession((message) => messages.push(message));
-    session.setScene(slide, 1, []);
+    const src = memorySource(slide);
+    src.attach(session);
     try {
       await session.cue("A client calls the API Gateway.");
       const action = messages.find((message) => message.type === "action")!;
@@ -250,8 +254,10 @@ describe("incremental AWS architecture narration", () => {
           Object.fromEntries(Object.entries(object).reverse()) as typeof object,
         ),
       };
-      session.setScene(schemaParsedLike, 2, [], action.action.sequence.id);
-      session.setScene(Object.fromEntries(Object.entries(schemaParsedLike).reverse()) as typeof schemaParsedLike, 2, [], action.action.sequence.id);
+      src.set(schemaParsedLike);
+      session.sync("self");
+      src.set(Object.fromEntries(Object.entries(schemaParsedLike).reverse()) as typeof schemaParsedLike);
+      session.sync("self");
       expect(messages.filter((message) => message.type === "error")).toHaveLength(0);
       expect(messages.filter((message) => message.type === "state" && message.cueId === action.action.id && message.state === "invalidated")).toHaveLength(0);
       await session.cue("Route 53 uses latency and geographic routing to choose the nearest region.");
@@ -267,16 +273,14 @@ describe("incremental AWS architecture narration", () => {
     const messages: ServerMessage[] = [];
     const session = new VisualSession((message) => messages.push(message));
     const scene = blank();
-    session.setScene(scene, 1, []);
+    const src = memorySource(scene);
+    src.attach(session);
     await session.cue("A client invokes the API");
     const first = [...messages].reverse().find((message) => message.type === "action");
     if (first?.type !== "action" || !first.action.sequence) throw new Error("Missing first stage");
     await session.cue("via API Gateway");
-    session.setScene(
-      { ...scene, objects: [{ id: "manual", kind: "text", label: "Manual edit", x: 20, y: 20, width: 100, height: 50 }] },
-      2,
-      [],
-    );
+    src.set({ ...scene, objects: [{ id: "manual", kind: "text", label: "Manual edit", x: 20, y: 20, width: 100, height: 50 }] });
+    session.sync("self");
     session.complete(first.action.id);
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(messages.filter((message) => message.type === "action")).toHaveLength(1);
@@ -286,7 +290,7 @@ describe("incremental AWS architecture narration", () => {
   it("releases and clears the queue when a renderer explicitly cancels playback", async () => {
     const messages: ServerMessage[] = [];
     const session = new VisualSession((message) => messages.push(message));
-    session.setScene(blank(), 1, []);
+    memorySource(blank()).attach(session);
     await session.cue("A client invokes the API");
     const first = [...messages].reverse().find((message) => message.type === "action");
     if (first?.type !== "action" || !first.action.sequence) throw new Error("Missing first stage");
@@ -310,23 +314,28 @@ describe("incremental AWS architecture narration", () => {
       "The regional API sends requests to an Application Load Balancer.",
     ].reduce((scene, phrase) => apply(scene, sequence(scene, phrase)), blank());
     const otherScene = { ...blank(), id: "other-scene", title: "Meeting brief" };
-    session.setScene(board, 1, []);
+    const src = memorySource(board);
+    src.attach(session);
     try {
       await session.cue("It spreads traffic across 5–12 EC2 nodes in an Auto Scaling group running our application API.");
       const computeAction = messages.find((message) => message.type === "action");
       if (computeAction?.type !== "action" || !computeAction.action.sequence) throw new Error("Missing compute stage");
       const withCompute = apply(board, computeAction.action.sequence);
-      session.setScene(withCompute, 2, [], computeAction.action.sequence.id);
+      src.set(withCompute);
+      session.sync("self");
       session.cancel(computeAction.action.id);
-      session.setScene(otherScene, 3, []);
-      session.setScene(withCompute, 4, []);
+      src.set(otherScene);
+      session.sync("self");
+      src.set(withCompute);
+      session.sync("self");
 
       await session.cue("The service writes to a PostgreSQL primary writer and reads from multiple read replicas.");
       const databaseAction = [...messages].reverse().find((message) => message.type === "action");
       if (databaseAction?.type !== "action" || !databaseAction.action.sequence) throw new Error("Missing database stage after scene return");
       expect(databaseAction.action.sequence.steps).toContainEqual(expect.objectContaining({ type: "insert", connections: expect.arrayContaining([expect.objectContaining({ source: expect.stringContaining("-compute"), target: expect.stringContaining("-read-replicas") })]) }));
       const finalScene = apply(withCompute, databaseAction.action.sequence);
-      session.setScene(finalScene, 5, [], databaseAction.action.sequence.id);
+      src.set(finalScene);
+      session.sync("self");
       session.applied(databaseAction.action.id);
       session.complete(databaseAction.action.id);
       expect(messages).toContainEqual(expect.objectContaining({ type: "state", state: "completed", cueId: databaseAction.action.id }));

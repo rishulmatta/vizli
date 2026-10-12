@@ -15,6 +15,7 @@ export default function PresentationLayer({
   scale,
   scene,
   camera,
+  cameraGoal,
   viewportHeight,
   onComplete,
   onError,
@@ -24,14 +25,16 @@ export default function PresentationLayer({
   scale: number;
   scene: Scene;
   camera: { x: number; y: number; zoom: number };
+  /** Committed per-user camera destination the rendered camera must reach. */
+  cameraGoal: { x: number; y: number; zoom: number };
   viewportHeight: number;
   onComplete?: (token: string) => void;
   onError?: (token: string, reason: string) => void;
 }) {
   const [rects, setRects] = useState<Rect[]>([]);
   const overlay = useRef<SVGSVGElement>(null);
-  const latest = useRef({ frame, onComplete, onError, camera, scene });
-  latest.current = { frame, onComplete, onError, camera, scene };
+  const latest = useRef({ frame, onComplete, onError, camera, cameraGoal });
+  latest.current = { frame, onComplete, onError, camera, cameraGoal };
   const motions = useRef<MotionPlayback[]>([]);
   useLayoutEffect(() => {
     if (frame.step.type !== "attention" || !stage.current) {
@@ -145,8 +148,7 @@ export default function PresentationLayer({
           fail("The canvas camera did not reach the lesson view.");
           return;
         }
-        const { camera: current, scene: currentScene } = latest.current;
-        const goal = currentScene.viewport ?? { x: 0, y: 0, zoom: 1 };
+        const { camera: current, cameraGoal: goal } = latest.current;
         if (
           Math.abs(current.x - goal.x) < 0.01 &&
           Math.abs(current.y - goal.y) < 0.01 &&

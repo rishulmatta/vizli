@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { createDemoProject, type Scene, type BoardViewport } from '../packages/shared/src/index';
+import { savedViewport } from './ui';
 
 const sceneId = 'gesture-board';
 async function savedBoard(page: Page): Promise<Scene> {
@@ -63,7 +64,7 @@ test('whiteboard wheel, pointer-centered zoom and drag persist camera without ed
   const beforeWheel = await camera(page);
   await page.mouse.wheel(70, 90);
   await expect(canvas).toHaveAttribute('data-navigation-state', 'idle');
-  await expect.poll(async () => (await savedBoard(page)).viewport?.x).toBeCloseTo(beforeWheel.x + 70 / (scale * beforeWheel.zoom), 2);
+  await expect.poll(async () => (await savedViewport(page, sceneId)).x).toBeCloseTo(beforeWheel.x + 70 / (scale * beforeWheel.zoom), 2);
   expect((await camera(page)).y).toBeCloseTo(beforeWheel.y + 90 / (scale * beforeWheel.zoom), 2);
 
   const beforeZoom = await camera(page);
@@ -90,9 +91,9 @@ test('whiteboard wheel, pointer-centered zoom and drag persist camera without ed
   await page.mouse.up();
   await page.keyboard.up('Space');
   await expect(canvas).toHaveAttribute('data-navigation-state', 'idle');
-  await expect.poll(async () => (await savedBoard(page)).viewport?.x).toBeCloseTo(afterZoom.x - 45 / (scale * afterZoom.zoom), 2);
+  await expect.poll(async () => (await savedViewport(page, sceneId)).x).toBeCloseTo(afterZoom.x - 45 / (scale * afterZoom.zoom), 2);
   const saved = await savedBoard(page);
-  expect(saved.viewport!.y).toBeCloseTo(afterZoom.y - 30 / (scale * afterZoom.zoom), 2);
+  expect((await savedViewport(page, sceneId)).y).toBeCloseTo(afterZoom.y - 30 / (scale * afterZoom.zoom), 2);
   expect(saved.objects).toEqual(originalObjects);
 
   // A plain drag on blank canvas also pans; then reload the same saved camera.
@@ -102,8 +103,8 @@ test('whiteboard wheel, pointer-centered zoom and drag persist camera without ed
   await page.mouse.down();
   await page.mouse.move(blank.x - 30, blank.y - 20, { steps: 6 });
   await page.mouse.up();
-  await expect.poll(async () => (await savedBoard(page)).viewport?.x).toBeCloseTo(beforeDrag.x + 30 / (scale * beforeDrag.zoom), 2);
-  const persisted = (await savedBoard(page)).viewport;
+  await expect.poll(async () => (await savedViewport(page, sceneId)).x).toBeCloseTo(beforeDrag.x + 30 / (scale * beforeDrag.zoom), 2);
+  const persisted = await savedViewport(page, sceneId);
   await page.reload();
   await expect(canvas).toHaveAttribute('data-layout', 'whiteboard');
   expect(await camera(page)).toEqual(persisted);

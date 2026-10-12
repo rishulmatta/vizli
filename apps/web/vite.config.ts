@@ -12,6 +12,8 @@ export default defineConfig(({ mode }) => {
   const apiTarget = `http://${apiHost === "0.0.0.0" || apiHost === "::" ? "127.0.0.1" : apiHost}:${apiPort}`;
   return {
     plugins: [react()],
+    // One Yjs instance across the app and @vizli/shared (duplicate copies break instanceof checks).
+    resolve: { dedupe: ["yjs"] },
     server: {
       port: 5173,
       proxy: { "/api": { target: apiTarget, ws: true } },

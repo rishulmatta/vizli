@@ -9,6 +9,7 @@ import {
 import { localResolve, createNebiusResolver } from "./resolver.js";
 import { searchCommonsImage, type ImageResult } from "./images.js";
 import { VisualSession } from "./session.js";
+import { memorySource } from "./test-support.js";
 const project = createDemoProject(),
   scene = project.scenes[0]!;
 const result: ImageResult = {
@@ -72,7 +73,7 @@ describe("web image retrieval and chart anchoring", () => {
       search = vi.fn().mockResolvedValue(result),
       session = new VisualSession((m) => messages.push(m), undefined, search);
     try {
-      session.setScene(scene, 1, []);
+      memorySource(scene).attach(session);
       await session.cue("An apple on the x axis", false, true);
       expect(search).not.toHaveBeenCalled();
       await session.cue("An apple on the x axis", true, true);
@@ -101,10 +102,12 @@ describe("web image retrieval and chart anchoring", () => {
       ),
       session = new VisualSession((m) => messages.push(m), undefined, search);
     try {
-      session.setScene(scene, 1, []);
+      const src = memorySource(scene);
+      src.attach(session);
       const pending = session.cue("An apple on the x axis");
       await vi.waitFor(() => expect(search).toHaveBeenCalled());
-      session.setScene(project.scenes[1]!, 2, []);
+      src.set(project.scenes[1]!);
+      session.sync("self");
       release(result);
       await pending;
       expect(messages.some((m) => m.type === "action")).toBe(false);

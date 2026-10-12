@@ -26,7 +26,8 @@ type Props = {
   scale: number;
   viewportHeight: number;
   stage: RefObject<HTMLDivElement | null>;
-  onCommit: (scene: Scene) => void;
+  /** `base` is the scene the mutation was derived from (`sceneRef.current` at commit time). */
+  onCommit: (scene: Scene, base: Scene) => void;
 };
 
 /** Points closer than this (in stroke space) to the previous point are dropped. */
@@ -181,10 +182,10 @@ export default function InkLayer({ scene, sceneRef, inkTool, isBoard, camera, sc
         ...(color.opacity < 1 ? { opacity: color.opacity } : {}),
         points: g.points,
       };
-      onCommit(addInkStroke(current, stroke));
+      onCommit(addInkStroke(current, stroke), current);
     } else if (g.mode === "eraser" && g.hits.size) {
       const ink = (current.ink ?? []).filter((s) => !g.hits.has(s.id));
-      if (ink.length !== (current.ink ?? []).length) onCommit({ ...current, ink: ink.length ? ink : undefined });
+      if (ink.length !== (current.ink ?? []).length) onCommit({ ...current, ink: ink.length ? ink : undefined }, current);
     }
     setDraft(null);
     setErasing(new Set());

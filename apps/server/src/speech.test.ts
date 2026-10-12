@@ -1,5 +1,6 @@
 import { createDemoProject, type ServerMessage } from "@vizli/shared";
 import { VisualSession } from "./session.js";
+import { memorySource } from "./test-support.js";
 import { EventEmitter } from "node:events";
 import * as grpc from "@grpc/grpc-js";
 import { afterEach, describe, it, expect, vi } from "vitest";
@@ -92,7 +93,7 @@ describe("NVIDIA streaming speech lifecycle", () => {
     vi.useFakeTimers();
     const messages: ServerMessage[] = [],
       session = new VisualSession((message) => messages.push(message));
-    session.setScene(createDemoProject().scenes[2]!, 1, []);
+    memorySource(createDemoProject().scenes[2]!).attach(session);
     const mock = mockTransport(),
       cb = callbacks();
     cb.transcript.mockImplementation((text, final) =>

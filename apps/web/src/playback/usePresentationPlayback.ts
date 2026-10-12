@@ -3,6 +3,7 @@ import { useMachine } from "@xstate/react";
 import { assign, setup } from "xstate";
 import {
   applyPresentationStep,
+  canonicalScene,
   validatePresentationSequence,
   type Scene,
   type PresentationStep,
@@ -140,7 +141,7 @@ export function usePresentationPlayback(options: Options) {
       }
       clearTimer();
       sequence.current = action;
-      expected.current = JSON.stringify(latest.current.readScene());
+      expected.current = canonicalScene(latest.current.readScene());
       started.current = "";
       acknowledged.current = false;
       pendingDone.current = false;
@@ -196,7 +197,7 @@ export function usePresentationPlayback(options: Options) {
       if (
         sequence.current &&
         expected.current &&
-        JSON.stringify(scene) !== expected.current
+        canonicalScene(scene) !== expected.current
       )
         cancel();
     },
@@ -224,14 +225,18 @@ export function usePresentationPlayback(options: Options) {
     started.current = token;
     try {
       const current = latest.current.readScene();
-      if (JSON.stringify(current) !== expected.current) {
+      // Key order differs between peers' document copies, so compare order-independent JSON.
+      if (canonicalScene(current) !== expected.current) {
         cancel();
         return;
       }
       const next = applyPresentationStep(current, step);
-      expected.current = JSON.stringify(next);
-      if (JSON.stringify(next) !== JSON.stringify(current))
+      expected.current = canonicalScene(next);
+      if (expected.current !== canonicalScene(current)) {
         latest.current.commitScene(next, action.sequence!.id);
+        // The host may normalise the committed scene (e.g. per-user camera fields live outside the project); compare against what it now reads.
+        expected.current = canonicalScene(latest.current.readScene());
+      }
       if (step.type === "context") {
         queueMicrotask(() => finishStep(token));
         return;

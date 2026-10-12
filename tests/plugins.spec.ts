@@ -2,8 +2,8 @@ import { test, expect } from "@playwright/test";
 import {
   createDemoProject,
   createPluginObject,
-  type Scene,
 } from "../packages/shared/src/index";
+import { proxySession } from "./ui";
 
 test("domain parts share exact voice targets; draw playback completes and cancels without changing the document", async ({
   page,
@@ -32,15 +32,7 @@ test("domain parts share exact voice targets; draw playback completes and cancel
   }, project);
   const acknowledgements: { type: string; actionId: string }[] = [];
   let count = 0;
-  await page.routeWebSocket("**/api/session", (socket) => {
-    let scene: Scene, revision: number;
-    socket.send(JSON.stringify({ type: "ready", mode: "demo" }));
-    socket.onMessage((raw) => {
-      const m = JSON.parse(String(raw));
-      if (m.type === "scene") {
-        scene = m.scene;
-        revision = m.revision;
-      }
+  await proxySession(page, (m, session) => {
       if (m.type === "applied" || m.type === "animation.completed")
         acknowledgements.push(m);
       if (m.type !== "cue") return;
@@ -55,19 +47,17 @@ test("domain parts share exact voice targets; draw playback completes and cancel
         m.text === "draw"
           ? { type: "animate", targetId: "matrix-c", animation: "draw" }
           : { type: "highlight", targetId: targets[m.text] };
-      socket.send(
-        JSON.stringify({
+      session.reply({
           type: "action",
           action: {
             id: `plugin-${++count}`,
-            sceneId: scene.id,
-            revision,
+            sceneId: session.sceneId,
+            revision: 0,
             reason: "Plugin acceptance",
             ...action,
           },
-        }),
-      );
-    });
+        });
+      return true;
   });
   await page.goto("/");
   for (const target of [

@@ -1,4 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
+import { proxySession, savedViewport } from "./ui";
 import {
   createDemoProject,
   createPluginObject,
@@ -81,10 +82,10 @@ test("teacher narration builds symbolic matrices, colours row attention, pans an
     "stroke",
     /#(?:2563eb|3b82f6|0000ff)/i,
   );
-  const before = (await saved(page)).viewport?.y ?? 0;
+  const before = (await savedViewport(page, (await saved(page)).id)).y;
   await cue(page, "Now let's scroll down to see the multiplication");
   await expect
-    .poll(async () => (await saved(page)).viewport?.y ?? 0)
+    .poll(async () => (await savedViewport(page, (await saved(page)).id)).y)
     .toBeGreaterThan(before);
   await expect(page.getByTestId("presentation-playback")).toHaveAttribute(
     "data-state",
@@ -151,24 +152,15 @@ test("non-maths sequences use the same player and a manual edit cancels remainin
     if (!localStorage.getItem("vizli.project.v1"))
       localStorage.setItem("vizli.project.v1", JSON.stringify(p));
   }, project);
-  await page.routeWebSocket("**/api/session", (socket) => {
-    let scene: Scene, revision: number;
-    socket.send(JSON.stringify({ type: "ready", mode: "demo" }));
-    socket.onMessage((raw) => {
-      const m = JSON.parse(String(raw));
-      if (m.type === "scene") {
-        scene = m.scene;
-        revision = m.revision;
-      }
-      if (m.type === "cue")
-        socket.send(
-          JSON.stringify({
+  await proxySession(page, (m, session) => {
+      if (m.type !== "cue") return;
+        session.reply({
             type: "action",
             action: {
               id: "cloud-sequence-action",
               type: "sequence",
-              sceneId: scene.id,
-              revision,
+              sceneId: session.sceneId,
+              revision: 0,
               reason: "Generic cloud presentation",
               sequence: {
                 id: "cloud-walkthrough",
@@ -203,9 +195,8 @@ test("non-maths sequences use the same player and a manual edit cancels remainin
                 ],
               },
             },
-          }),
-        );
-    });
+          });
+      return true;
   });
   await page.goto("/");
   await cue(page, "Show the cloud workflow");

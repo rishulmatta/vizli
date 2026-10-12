@@ -1,5 +1,6 @@
 import { test, expect } from "@playwright/test";
-import { createDemoProject, type Scene } from "../packages/shared/src/index";
+import { createDemoProject } from "../packages/shared/src/index";
+import { proxySession } from "./ui";
 
 test("retrieved image renders on the axis, follows its chart, detaches on drag, and undoes", async ({
   page,
@@ -22,25 +23,15 @@ test("retrieved image renders on the axis, follows its chart, detaches on drag, 
   );
   // The external service and session are tested on the server. This fixture
   // verifies the browser's action boundary without depending on public search.
-  await page.routeWebSocket("**/api/session", (socket) => {
-    let scene: Scene;
-    let revision: number;
-    socket.send(JSON.stringify({ type: "ready", mode: "demo" }));
-    socket.onMessage((raw) => {
-      const message = JSON.parse(String(raw));
-      if (message.type === "scene") {
-        scene = message.scene;
-        revision = message.revision;
-      }
-      if (message.type === "cue")
-        socket.send(
-          JSON.stringify({
+  await proxySession(page, (message, session) => {
+      if (message.type !== "cue") return;
+        session.reply({
             type: "action",
             action: {
               id: "search-result",
               type: "add_image",
-              sceneId: scene.id,
-              revision,
+              sceneId: session.sceneId,
+              revision: 0,
               reason: "Found an apple image on Wikimedia Commons.",
               object: {
                 id: "searched-apple",
@@ -62,9 +53,8 @@ test("retrieved image renders on the axis, follows its chart, detaches on drag, 
                 },
               },
             },
-          }),
-        );
-    });
+          });
+      return true;
   });
   await page.goto("/");
   await page.getByTestId("cue-input").fill("An apple on the x axis");

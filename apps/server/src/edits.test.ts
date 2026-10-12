@@ -2,6 +2,7 @@ import {describe,it,expect} from 'vitest';
 import {applyObjectEdit,createDemoProject,type ServerMessage} from '@vizli/shared';
 import {localResolve,validateProposal,normalizeModelProposal} from './resolver.js';
 import {VisualSession} from './session.js';
+import {memorySource} from './test-support.js';
 const project=createDemoProject(),math=project.scenes[1]!;
 describe('atomic voice amendments',()=>{
  it('preserves cells and IDs when growing, shrinks safely and never mutates on invalid edits',()=>{
@@ -40,9 +41,9 @@ describe('atomic voice amendments',()=>{
  expect(validateProposal({type:'edit_object',targetId:'matrix-a:cell:2:1',reason:'Requested',patch:{cell:{row:2,col:1,value:9}}},grown,'Change third row second column of matrix A to nine')).toMatchObject({type:'edit_object',targetId:'matrix-a'});
  });
  it('only dispatches persistent edits on finals and fences stale results',async()=>{
- const messages:ServerMessage[]=[];const s=new VisualSession(m=>messages.push(m));s.setScene(math,1,[]);
+ const messages:ServerMessage[]=[];const s=new VisualSession(m=>messages.push(m));memorySource(math).attach(s);
  await s.cue('Make matrix A three by two',false,true);expect(messages.some(m=>m.type==='action')).toBe(false);
  await s.cue('Make matrix A three by two',true,true);expect(messages.find(m=>m.type==='action')).toMatchObject({action:{type:'edit_object',patch:{matrix:{rows:3,cols:2}}}});s.close();
- let finish!:(value:any)=>void;const delayed=new VisualSession(m=>messages.push(m),()=>new Promise(resolve=>{finish=resolve}));delayed.setScene(math,1,[]);const task=delayed.cue('resize matrix A',true,true);delayed.setScene(math,2,[]);finish({type:'edit_object',targetId:'matrix-a',patch:{matrix:{rows:3}},reason:'Requested'});await task;expect(messages.filter(m=>m.type==='action')).toHaveLength(1);delayed.close();
+ let finish!:(value:any)=>void;const delayed=new VisualSession(m=>messages.push(m),()=>new Promise(resolve=>{finish=resolve}));const src=memorySource(math);src.attach(delayed);const task=delayed.cue('resize matrix A',true,true);src.set(math);delayed.sync('self');finish({type:'edit_object',targetId:'matrix-a',patch:{matrix:{rows:3}},reason:'Requested'});await task;expect(messages.filter(m=>m.type==='action')).toHaveLength(1);delayed.close();
  });
 });

@@ -135,6 +135,10 @@ On the marketing slide, type **“An apple on the x axis.”** Vizli searches Wi
 
 Existing objects can be edited with spoken or typed instructions. Try **“Make matrix A 3 by 2”**, **“Set row 3 column 2 of matrix A to 9”**, or **“Change Revenue to $4.5M.”** You can also request label/text/color changes, explicit dimensions, and individual chart values. Name the object clearly; ambiguous edits are skipped. Each completed edit is atomic and undoable, and matrix resizing preserves overlapping values while filling new cells with zero. Symbolic calculation and automatic derivation updates remain separate work.
 
+## Collaborate
+
+Open a project link, `/p/<id>`, and send it to others. Several people on Macs and iPads can open the same link and work on one project together: edits, ink and attention (pointers and highlights) sync live. Each person keeps their own whiteboard camera and their own undo. There is no login yet, so anyone with the link can edit; share it only with people you trust. The collaboration limits and related environment variables are listed in `.env.example`, and the design, wire protocol and known limits are in [docs/COLLAB.md](docs/COLLAB.md).
+
 ## Live speech and AI
 
 Copy `.env.example` to `.env` at the repository root. Set:
