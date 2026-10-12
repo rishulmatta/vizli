@@ -11,7 +11,8 @@ test("retrieved image renders on the axis, follows its chart, detaches on drag, 
     (p) => localStorage.setItem("vizli.project.v1", JSON.stringify(p)),
     project,
   );
-  const src = "https://images.example.test/apple.png";
+  // The renderer only loads Commons hosts (docs/SECURITY.md); the real search returns upload.wikimedia.org URLs.
+  const src = "https://upload.wikimedia.org/wikipedia/commons/thumb/1/15/Red_Apple.jpg/600px-Red_Apple.jpg";
   await page.route(src, (route) =>
     route.fulfill({
       contentType: "image/png",

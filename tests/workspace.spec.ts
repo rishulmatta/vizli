@@ -79,15 +79,24 @@ test("project persistence validates unsafe payloads", async ({ request }) => {
   expect(body.speechConfigured).toBe(false);
 });
 
-test("narrow workspace avoids horizontal page overflow", async ({ page }) => {
+test("narrow workspace avoids horizontal page overflow for editors and viewers", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/");
   await expect(page.getByTestId("scene-canvas")).toBeVisible();
-  const dimensions = await page.evaluate(() => ({
-    width: innerWidth,
-    scroll: document.documentElement.scrollWidth,
-  }));
-  expect(dimensions.scroll).toBeLessThanOrEqual(dimensions.width + 1);
+  const measure = () =>
+    page.evaluate(() => ({
+      width: innerWidth,
+      scroll: document.documentElement.scrollWidth,
+    }));
+  const editor = await measure();
+  expect(editor.scroll).toBeLessThanOrEqual(editor.width + 1);
+  // The shared demo is view only: the role controls in the header must not widen the page either.
+  await page.goto("/p/default");
+  await expect(page.getByTestId("scene-canvas")).toBeVisible();
+  await expect(page.getByTestId("cue-input")).toBeDisabled();
+  await expect(page.getByTestId("fork-project")).toBeVisible();
+  const viewer = await measure();
+  expect(viewer.scroll).toBeLessThanOrEqual(viewer.width + 1);
 });
 
 test("rehearsal remembers a selected object and survives reload", async ({

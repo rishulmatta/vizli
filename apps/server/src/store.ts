@@ -1,15 +1,18 @@
-import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { ProjectSchema, createDemoProject, type Project } from "@vizli/shared";
+import { parseAccessRecord, type AccessRecord } from "./collab/access.js";
 const ID = /^[a-zA-Z0-9_-]{1,120}$/;
+type Extension = "json" | "yjs" | "access.json";
 /**
  * File-backed project store. `<id>.json` is the plain, schema-valid project used by the HTTP API and exports.
  * `<id>.yjs` is the authoritative collaborative document (a full Yjs state update) once a room has written it.
+ * `<id>.access.json` holds the hashed edit token; it is never part of the document.
  */
 export class ProjectStore {
   constructor(private directory: string) {}
-  private path(id: string, extension: "json" | "yjs" = "json") {
+  private path(id: string, extension: Extension = "json") {
     if (!ID.test(id)) throw new Error("Invalid project ID");
     return join(this.directory, `${id}.${extension}`);
   }
@@ -60,6 +63,33 @@ export class ProjectStore {
   }
   async saveUpdate(id: string, update: Uint8Array) {
     await this.atomicWrite(this.path(id, "yjs"), update);
+  }
+  /** Hashed edit token, or null for projects created before access records existed. Malformed files throw. */
+  async loadAccess(id: string): Promise<AccessRecord | null> {
+    try {
+      return parseAccessRecord(
+        JSON.parse(await readFile(this.path(id, "access.json"), "utf8")),
+      );
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw e;
+    }
+  }
+  async saveAccess(id: string, record: AccessRecord) {
+    await this.atomicWrite(this.path(id, "access.json"), JSON.stringify(record));
+  }
+  /** Removes every file of a project. Returns true when at least one existed. */
+  async deleteProject(id: string): Promise<boolean> {
+    let existed = false;
+    for (const extension of ["yjs", "json", "access.json"] as const) {
+      try {
+        await rm(this.path(id, extension));
+        existed = true;
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+      }
+    }
+    return existed;
   }
   /** Which representation exists on disk; `yjs` wins when both do because it is the merge history. */
   async exists(id: string): Promise<"yjs" | "json" | null> {

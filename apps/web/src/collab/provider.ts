@@ -3,7 +3,7 @@ import * as encoding from 'lib0/encoding';
 import * as decoding from 'lib0/decoding';
 import { messageYjsSyncStep2, readSyncMessage, writeSyncStep1, writeUpdate } from 'y-protocols/sync';
 import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate, removeAwarenessStates } from 'y-protocols/awareness';
-import type { ClientMessage, ServerMessage } from '@vizli/shared';
+import type { ClientMessage, CollabRole, ServerMessage } from '@vizli/shared';
 import { CHANNEL_AWARENESS, CHANNEL_SYNC, type SessionTransport } from './transport';
 
 const HEARTBEAT_MS = 15_000;
@@ -16,7 +16,7 @@ export type ProviderOptions = {
    * May return a replacement doc/awareness (the cached doc belonged to another document ID);
    * the provider rebinds to it before handling the buffered server step 1.
    */
-  onJoined?: (docId: string) => Promise<{ doc: Y.Doc; awareness: Awareness } | void> | { doc: Y.Doc; awareness: Awareness } | void;
+  onJoined?: (docId: string, role: CollabRole) => Promise<{ doc: Y.Doc; awareness: Awareness } | void> | { doc: Y.Doc; awareness: Awareness } | void;
   onSynced?: (synced: boolean) => void;
   /** The room is joined and buffered frames were processed; session messages may now be sent. */
   onReady?: () => void;
@@ -136,7 +136,7 @@ export class YSocketProvider {
     this.docId = message.docId;
     let replacement: { doc: Y.Doc; awareness: Awareness } | void = undefined;
     try {
-      replacement = await this.options.onJoined?.(message.docId);
+      replacement = await this.options.onJoined?.(message.docId, message.role);
     } catch (error) {
       console.warn('Could not prepare the local document copy', error);
     }

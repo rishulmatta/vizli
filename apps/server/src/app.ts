@@ -15,22 +15,34 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import * as decoding from "lib0/decoding";
 import {
+  CLOSE_JOIN_TIMEOUT,
+  CLOSE_PROJECT_DELETED,
+  CLOSE_TOO_MANY_CONNECTIONS,
+  CLOSE_WRITE_REFUSED,
   ClientMessageSchema,
   ProjectSchema,
   createDemoProject,
   type ServerMessage,
 } from "@vizli/shared";
+export { CLOSE_JOIN_TIMEOUT, CLOSE_PROJECT_DELETED, CLOSE_TOO_MANY_CONNECTIONS, CLOSE_WRITE_REFUSED };
 import { ProjectStore } from "./store.js";
 import {
   CHANNEL_AUDIO,
   CHANNEL_AWARENESS,
   CHANNEL_SYNC,
+  READ_ONLY_MESSAGE,
   RoomError,
   RoomRegistry,
   type DocRoom,
   type Member,
 } from "./collab/rooms.js";
-import { ByteBucket, CountWindow, collabLimitsFromEnv } from "./collab/limits.js";
+import {
+  ByteBucket,
+  ConnectionTable,
+  CountWindow,
+  collabLimitsFromEnv,
+} from "./collab/limits.js";
+import { bearerToken, secretMatches } from "./collab/access.js";
 import { VisualSession } from "./session.js";
 import { createNebiusResolver } from "./resolver.js";
 import { createIntentRouter } from "./intent.js";
@@ -52,6 +64,63 @@ type AppDependencies = {
     ...args: ConstructorParameters<typeof NvidiaSpeech>
   ) => SpeechConnection;
 };
+
+/**
+ * `TRUST_PROXY`: an integer trusts that many reverse-proxy hops when reading the client address and protocol
+ * (use `1` behind one managed HTTPS proxy), `true` trusts every `X-Forwarded-For` entry (clients can spoof
+ * it), anything else trusts none. Per-client limits key on that address, so a wrong setting either lumps every
+ * visitor together or lets a visitor pick their own key.
+ */
+export function trustProxyFromEnv(
+  value: string | undefined,
+): boolean | ((address: string, hop: number) => boolean) {
+  const normalized = value?.trim().toLowerCase();
+  if (!normalized || normalized === "false") return false;
+  if (normalized === "true") return true;
+  if (!/^\d+$/.test(normalized)) return false;
+  // Same rule proxy-addr applies to a numeric setting: trust the first `hops` addresses behind the socket.
+  const hops = Number(normalized);
+  return (_address, hop) => hop < hops;
+}
+/** Project ids are read capabilities, so request logs never carry them. */
+export function redactUrl(url: string): string {
+  return url
+    .replace(/^(\/api\/projects\/)[^/?#]+/, "$1[id]")
+    .replace(/^(\/p\/)[^/?#]+/, "$1[id]");
+}
+const RESPONSE_HEADERS: Record<string, string> = {
+  "x-content-type-options": "nosniff",
+  "x-frame-options": "DENY",
+  "referrer-policy": "no-referrer",
+  "permissions-policy":
+    "microphone=(self), camera=(), geolocation=(), payment=(), usb=(), display-capture=()",
+  "cross-origin-opener-policy": "same-origin",
+  "cross-origin-resource-policy": "same-origin",
+};
+/**
+ * Content Security Policy for the served app. Scripts only from this origin; styles allow inline (React and
+ * KaTeX set style attributes) and Google Fonts; images only this origin, embedded data and the Wikimedia hosts
+ * the image search returns; connections only this origin (its WebSocket spelled out for older browsers) plus
+ * any `CSP_CONNECT_SRC` entries such as a Supabase URL.
+ */
+export function contentSecurityPolicy(host: string | undefined, extraConnect: string[] = []): string {
+  const safeHost = host && /^[A-Za-z0-9.\-:[\]]+$/.test(host) ? host : undefined;
+  const sockets = safeHost ? [`ws://${safeHost}`, `wss://${safeHost}`] : [];
+  return [
+    "default-src 'self'",
+    "base-uri 'self'",
+    "object-src 'none'",
+    "frame-ancestors 'none'",
+    "form-action 'self'",
+    "script-src 'self'",
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    "font-src 'self' data: https://fonts.gstatic.com",
+    "img-src 'self' data: https://upload.wikimedia.org https://thumb.wikimedia.org",
+    `connect-src ${["'self'", ...sockets, ...extraConnect].join(" ")}`,
+    "worker-src 'self'",
+    "manifest-src 'self'",
+  ].join("; ");
+}
 export async function buildApp(
   env: NodeJS.ProcessEnv = process.env,
   dependencies: AppDependencies = {},
@@ -62,8 +131,20 @@ export async function buildApp(
     ((...args: ConstructorParameters<typeof NvidiaSpeech>) =>
       new NvidiaSpeech(...args));
   const app = Fastify({
-    logger: env.NODE_ENV !== "test",
+    logger:
+      env.NODE_ENV !== "test"
+        ? {
+            serializers: {
+              req: (request: { method?: string; url?: string; ip?: string }) => ({
+                method: request.method,
+                url: request.url ? redactUrl(request.url) : undefined,
+                remoteAddress: request.ip,
+              }),
+            },
+          }
+        : false,
     bodyLimit: 12 * 1024 * 1024,
+    trustProxy: trustProxyFromEnv(env.TRUST_PROXY),
   });
   const sessionCleanups = new Set<() => void>();
   app.addHook("preClose", async () => {
@@ -81,6 +162,14 @@ export async function buildApp(
     warn: (message) => app.log.warn(message),
     info: (message) => app.log.info(message),
   });
+  const connections = new ConnectionTable(limits.maxSocketsPerClient);
+  const adminToken = env.ADMIN_TOKEN?.trim() || undefined;
+  const isAdmin = (request: { headers: { authorization?: string | string[] } }) =>
+    secretMatches(adminToken, bearerToken(request.headers.authorization));
+  const extraConnect = (env.CSP_CONNECT_SRC ?? "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => /^(https?|wss?):\/\/[A-Za-z0-9.\-:[\]/]+$/.test(entry));
   // Default trusted origins follow the configured API port so moving off 3001 keeps the built app usable.
   const apiPort = env.PORT?.trim() || "3001";
   const allowed = new Set(
@@ -90,6 +179,10 @@ export async function buildApp(
     ).split(","),
   );
   app.addHook("onRequest", async (request, reply) => {
+    for (const [name, value] of Object.entries(RESPONSE_HEADERS)) reply.header(name, value);
+    reply.header("content-security-policy", contentSecurityPolicy(request.headers.host, extraConnect));
+    if (request.protocol === "https")
+      reply.header("strict-transport-security", "max-age=15552000");
     // No wildcard CORS; browser mutations and upgrades require a trusted same-app origin.
     const origin = request.headers.origin;
     if (origin && !allowed.has(origin)) {
@@ -120,7 +213,7 @@ export async function buildApp(
         .code(400)
         .send({ error: "Supply a prompt and supported scene kind." });
     try {
-      return await generateScene(parsed.data, env, usage);
+      return await generateScene(parsed.data, env, usage.forClient(request.ip));
     } catch (error) {
       if (error instanceof UsageLimitError)
         return reply.code(429).send({ error: error.message });
@@ -166,16 +259,19 @@ export async function buildApp(
       updatedAt: new Date().toISOString(),
     };
     try {
-      await registry.createProject(project);
+      // The edit token is returned exactly once; the server keeps only its hash.
+      const { editToken } = await registry.createProject(project, { client: request.ip });
+      return reply.code(201).send({ id, editToken });
     } catch (error) {
       if (error instanceof RoomError && error.code === "project-limit")
         return reply.code(429).send({ error: error.message });
       if (error instanceof RoomError && error.code === "project-exists")
         return reply.code(409).send({ error: error.message });
+      if (error instanceof RoomError && error.code === "document-full")
+        return reply.code(413).send({ error: error.message });
       request.log.error({ err: error }, "project create failed");
       return reply.code(500).send({ error: "Could not create the project on the server" });
     }
-    return reply.code(201).send({ id });
   });
   app.put<{ Params: { id: string } }>(
     "/api/projects/:id",
@@ -192,11 +288,27 @@ export async function buildApp(
         return reply
           .code(400)
           .send({ error: "Project ID mismatch or invalid ID" });
+      let role: Awaited<ReturnType<RoomRegistry["authorize"]>>;
+      try {
+        role = await registry.authorize(parsed.data.id, bearerToken(request.headers.authorization));
+      } catch (error) {
+        request.log.error({ err: error }, "project access read failed");
+        return reply.code(500).send({ error: "Saved project could not be read. The file was preserved." });
+      }
+      if (role === null)
+        return reply.code(404).send({ error: "Project not found. Create projects with POST /api/projects." });
+      if (role !== "editor" && !isAdmin(request))
+        return reply.code(403).send({
+          error: "An edit token is required to replace this project.",
+          code: "read-only",
+        });
       let mode: Awaited<ReturnType<RoomRegistry["importProject"]>>;
       try {
         // Imports merge into the live room (collaborators converge) or the stored document; history is kept.
         mode = await registry.importProject(parsed.data);
       } catch (error) {
+        if (error instanceof RoomError && error.code === "document-full")
+          return reply.code(413).send({ error: error.message, code: error.code });
         // Keep filesystem paths out of API responses; the log retains the diagnostic.
         request.log.error({ err: error }, "project save failed");
         return reply.code(500).send({ error: "Could not save the project on the server" });
@@ -204,7 +316,36 @@ export async function buildApp(
       return { ok: true, mode };
     },
   );
-  app.get("/api/session", { websocket: true }, (socket) => {
+  /** Operator action: wipe a project (or reset the demo) with the ADMIN_TOKEN bearer token. */
+  app.delete<{ Params: { id: string } }>(
+    "/api/projects/:id",
+    async (request, reply) => {
+      const { id } = request.params;
+      if (!PROJECT_ID.test(id))
+        return reply.code(400).send({ error: "Invalid project ID" });
+      if (!adminToken)
+        return reply.code(403).send({ error: "Project deletion is disabled: set ADMIN_TOKEN on the server." });
+      if (!isAdmin(request))
+        return reply.code(403).send({ error: "Invalid admin token" });
+      try {
+        const existed = await registry.deleteProject(id);
+        if (!existed) return reply.code(404).send({ error: "Project not found" });
+        return reply.code(204).send();
+      } catch (error) {
+        request.log.error({ err: error }, "project delete failed");
+        return reply.code(500).send({ error: "Could not delete the project" });
+      }
+    },
+  );
+  app.get("/api/session", { websocket: true }, (socket, request) => {
+    // Per-client state keys on the request address (see TRUST_PROXY); nothing else identifies a visitor.
+    const client = request.ip;
+    const releaseConnection = connections.acquire(client);
+    if (!releaseConnection) {
+      socket.close(CLOSE_TOO_MANY_CONNECTIONS, "Too many connections from this address");
+      return;
+    }
+    const clientUsage = usage.forClient(client);
     let room: DocRoom | undefined;
     let member: Member | undefined;
     let joining = false;
@@ -251,8 +392,31 @@ export async function buildApp(
       send({ type: "error", message: "Unreadable collaboration frame.", code: "bad-frame" });
       if (badFrames >= MAX_BAD_FRAMES) socket.close(1007, "Too many unreadable frames");
     };
+    /**
+     * A refused write is reported and never applied. The replica that sent it now holds a change the room
+     * lacks, and its later updates would depend on it, so the socket is closed with CLOSE_WRITE_REFUSED and the
+     * client discards its local copy before rejoining.
+     */
+    const refusedWrite = (error: RoomError) => {
+      send({ type: "error", message: error.message, code: error.code });
+      socket.close(CLOSE_WRITE_REFUSED, error.code);
+    };
+    // Sockets that never join hold a session and timers for nothing; close them after the deadline.
+    let joinTimer: ReturnType<typeof setTimeout> | undefined;
+    const checkJoin = () => {
+      joinTimer = undefined;
+      if (room || ended) return;
+      if (joining) {
+        joinTimer = setTimeout(checkJoin, 1000);
+        joinTimer.unref?.();
+        return;
+      }
+      socket.close(CLOSE_JOIN_TIMEOUT, "Join timeout");
+    };
+    joinTimer = setTimeout(checkJoin, limits.joinTimeoutMs);
+    joinTimer.unref?.();
     const nebius = configured
-      ? { usage, key: providerConfig.nebiusKey!, baseUrl: providerConfig.baseUrl }
+      ? { usage: clientUsage, key: providerConfig.nebiusKey!, baseUrl: providerConfig.baseUrl }
       : undefined;
     const resolver = nebius
       ? createNebiusResolver({
@@ -268,11 +432,11 @@ export async function buildApp(
       sessionSend,
       resolver,
       undefined,
-      (request, signal) => generateScene(request, env, usage, signal),
+      (planRequest, signal) => generateScene(planRequest, env, clientUsage, signal),
       lessonAuthor,
     );
     let speech: SpeechConnection | undefined;
-    const voiceBudget = new VoiceBudget(usage);
+    const voiceBudget = new VoiceBudget(clientUsage);
     let cueTimes: number[] = [];
     let speechEpoch = 0;
     const stopVoice = () => {
@@ -319,9 +483,14 @@ export async function buildApp(
           }
           try {
             room.handleSync(socket, body);
-          } catch {
+          } catch (error) {
+            if (
+              error instanceof RoomError &&
+              (error.code === "read-only" || error.code === "document-full")
+            )
+              refusedWrite(error);
             // RoomError("bad-frame"); never let a frame error escape the socket listener.
-            badFrame();
+            else badFrame();
           }
         } else if (channel === CHANNEL_AWARENESS) {
           if (!awarenessWindow.allow()) return;
@@ -361,7 +530,7 @@ export async function buildApp(
           joining = true;
           void registry
             .join(
-              { projectId: message.projectId, seed: message.seed },
+              { projectId: message.projectId, seed: message.seed, token: message.token, client },
               {
                 socket,
                 clientId: message.clientId,
@@ -381,11 +550,16 @@ export async function buildApp(
                 // `room.join` (inside the registry) already queued sync step 1, so it precedes `joined`.
                 room = joined;
                 member = joined.sockets.get(socket);
+                if (joinTimer) {
+                  clearTimeout(joinTimer);
+                  joinTimer = undefined;
+                }
                 send({
                   type: "joined",
                   projectId: message.projectId,
                   docId: joined.docId,
                   version: joined.version,
+                  role: member?.role ?? "viewer",
                 });
                 session.attach(joined, message.sceneId);
               },
@@ -411,6 +585,11 @@ export async function buildApp(
             activeAreaId: message.activeAreaId,
           });
         else if (message.type === "cue") {
+          // Cues spend model budget and fan effects out to every peer: editors only.
+          if (member?.role !== "editor") {
+            send({ type: "error", message: READ_ONLY_MESSAGE, code: "read-only" });
+            return;
+          }
           const now = Date.now();
           cueTimes = cueTimes.filter((time) => time > now - 2000);
           if (cueTimes.length >= 10) {
@@ -430,6 +609,11 @@ export async function buildApp(
         else if (message.type === "animation.cancelled")
           session.cancel(message.actionId);
         else if (message.type === "listen") {
+          if (message.enabled && member?.role !== "editor") {
+            send({ type: "error", message: READ_ONLY_MESSAGE, code: "read-only" });
+            send({ type: "speech", state: "off" });
+            return;
+          }
           stopVoice();
           if (!message.enabled) {
             send({ type: "speech", state: "off" });
@@ -491,9 +675,11 @@ export async function buildApp(
       if (ended) return;
       ended = true;
       sessionCleanups.delete(cleanup);
+      if (joinTimer) clearTimeout(joinTimer);
       stopVoice();
       session.close();
       room?.leave(socket);
+      releaseConnection();
     };
     sessionCleanups.add(cleanup);
     socket.on("close", cleanup);

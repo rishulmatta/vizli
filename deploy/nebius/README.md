@@ -28,7 +28,16 @@ One image (root `Dockerfile`) builds the shared package, the web app and the ser
 
 ## Notes
 
-- `--auth none` is deliberate: judges must reach the app without a token. The server's own limits (`MAX_*` in `.env.example`) bound voice minutes and model calls per hour.
+- `--auth none` is deliberate: judges must reach the app without a platform token; the app's own access model applies instead (view links, edit links, read-only demo; `docs/SECURITY.md`). The server's own limits (`MAX_*` in `.env.example`) bound voice minutes and model calls per hour, shared and per visitor.
 - Projects are stored under `/app/.data` inside the container, so a restart clears saved projects. Guest isolation on a shared backend is still an open item in `docs/STATUS-PENDING.md`; for judging, treat the deployment as a shared demo canvas.
 - `cpu-d3` with `4vcpu-16gb` is the preset from the official quickstart; any CPU platform listed by `nebius compute platform list` works because inference runs on Token Factory, not in the container.
 - WebSockets: the managed HTTPS URL fronts the container's HTTP port. Confirm the WebSocket session upgrades through it during the smoke test; if the platform does not pass upgrades, use the Vercel + Railway fallback for the session API and keep Token Factory as the inference provider.
+
+## Security settings
+
+The script sets `TRUST_PROXY=1` so the server reads each visitor's address from the managed proxy's
+`X-Forwarded-For` (the per-client limits and HSTS depend on it) and, when `ADMIN_TOKEN_SECRET` is exported,
+passes the admin token as a secret so `DELETE /api/projects/:id` can wipe a project or reset the demo. After
+the first deploy, confirm with `curl -I <url>/api/status` that the security headers and
+`strict-transport-security` are present, open an edit link and a view link from two networks, and check that
+two networks get separate socket caps (`MAX_SOCKETS_PER_CLIENT`). The full checklist is in `docs/SECURITY.md`.

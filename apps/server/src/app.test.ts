@@ -3,116 +3,77 @@ import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import WebSocket from "ws";
-import * as Y from "yjs";
-import { readSyncMessage, writeSyncStep1, writeUpdate } from "y-protocols/sync";
 import { Awareness, encodeAwarenessUpdate } from "y-protocols/awareness";
 import * as encoding from "lib0/encoding";
-import * as decoding from "lib0/decoding";
 import { buildApp } from "./app.js";
 import { CHANNEL_AWARENESS, CHANNEL_SYNC, frame } from "./collab/rooms.js";
-import { PROJECT_ROOT, createDemoProject, toPlain } from "@vizli/shared";
+import { createDemoProject, toPlain } from "@vizli/shared";
+import { connect, createProject, relabel, type App, type TestClient } from "./socket-test-support.js";
 
-type TestClient = Awaited<ReturnType<typeof connect>>;
-let clientCount = 0;
-/** Minimal browser stand-in: a real `ws` socket plus a Y.Doc speaking channel-0 sync frames. */
-async function connect(app: Awaited<ReturnType<typeof buildApp>>) {
-  const address = app.server.listening
-    ? `http://127.0.0.1:${(app.server.address() as { port: number }).port}`
-    : await app.listen({ port: 0, host: "127.0.0.1" });
-  const socket = new WebSocket(address.replace("http://", "ws://") + "/api/session");
-  const doc = new Y.Doc();
-  const json: any[] = [];
-  const name = String.fromCharCode(65 + (clientCount++ % 26));
-  const clientId = `client-${name}-${clientCount}`;
-  socket.on("message", (data: Buffer, isBinary: boolean) => {
-    if (!isBinary) {
-      json.push(JSON.parse(data.toString()));
-      return;
-    }
-    const bytes = new Uint8Array(data);
-    const decoder = decoding.createDecoder(bytes);
-    if (decoding.readVarUint(decoder) !== CHANNEL_SYNC) return;
-    const reply = encoding.createEncoder();
-    readSyncMessage(decoding.createDecoder(bytes.subarray(decoder.pos)), reply, doc, "server");
-    if (encoding.length(reply) > 0) socket.send(frame(CHANNEL_SYNC, encoding.toUint8Array(reply)));
-  });
-  doc.on("update", (update: Uint8Array, origin: unknown) => {
-    if (origin === "server" || socket.readyState !== WebSocket.OPEN) return;
-    const encoder = encoding.createEncoder();
-    writeUpdate(encoder, update);
-    socket.send(frame(CHANNEL_SYNC, encoding.toUint8Array(encoder)));
-  });
-  await new Promise<void>((resolve, reject) => {
-    socket.once("open", () => resolve());
-    socket.once("error", reject);
-  });
-  const sendJoin = (projectId: string) =>
-    socket.send(
-      JSON.stringify({ type: "join", projectId, userId: `user-${name}`, clientId, name: `${name}-user`, color: "#d2432f" }),
-    );
-  return {
-    socket,
-    doc,
-    json,
-    clientId,
-    name: `${name}-user`,
-    sendJoin,
-    async join(projectId: string) {
-      sendJoin(projectId);
-      await vi.waitFor(() => expect(json.some((m) => m.type === "joined")).toBe(true));
-      const step1 = encoding.createEncoder();
-      writeSyncStep1(step1, doc);
-      socket.send(frame(CHANNEL_SYNC, encoding.toUint8Array(step1)));
-      await vi.waitFor(() => expect(toPlain(doc).scenes.length).toBeGreaterThan(0));
-      return json.find((m) => m.type === "joined");
-    },
-    cue(text: string) {
-      socket.send(JSON.stringify({ type: "cue", text, source: "typed", mode: "presenting" }));
-    },
-    actions: () => json.filter((m) => m.type === "action").map((m) => m.action),
-    errors: () => json.filter((m) => m.type === "error").map((m) => m.code),
-  };
-}
-function relabel(doc: Y.Doc, label: string) {
-  const scenes = doc.getMap<unknown>(PROJECT_ROOT).get("scenes") as Y.Array<Y.Map<unknown>>;
-  const objects = scenes.get(0).get("objects") as Y.Array<Y.Map<unknown>>;
-  doc.transact(() => objects.get(0).set("label", label), "test");
-}
 describe("local API boundary", () => {
-  it("validates writes, preserves edits and rejects foreign origins", async () => {
+  it("validates writes, requires the edit token, keeps the demo read only and rejects foreign origins", async () => {
     const dir = await mkdtemp(join(tmpdir(), "vizli-test-"));
     const app = await buildApp({ NODE_ENV: "test", DATA_DIR: dir });
     try {
       expect((await app.inject("/api/status")).json().mode).toBe("demo");
-      const project = createDemoProject();
-      project.title = "Saved rehearsal";
+      const { id, editToken } = await createProject(app);
+      const project = { ...createDemoProject(), id, title: "Saved rehearsal" };
+      const authorized = { authorization: `Bearer ${editToken}` };
       expect(
-        (
-          await app.inject({
-            method: "PUT",
-            url: "/api/projects/default",
-            payload: project,
-          })
-        ).statusCode,
+        (await app.inject({ method: "PUT", url: `/api/projects/${id}`, headers: authorized, payload: project }))
+          .statusCode,
       ).toBe(200);
-      expect((await app.inject("/api/projects/default")).json().title).toBe(
-        "Saved rehearsal",
-      );
+      expect((await app.inject(`/api/projects/${id}`)).json().title).toBe("Saved rehearsal");
       expect(
         (
           await app.inject({
             method: "PUT",
-            url: "/api/projects/default",
+            url: `/api/projects/${id}`,
+            headers: authorized,
             payload: { ...project, scenes: [] },
           })
         ).statusCode,
       ).toBe(400);
+      const unauthorized = await app.inject({ method: "PUT", url: `/api/projects/${id}`, payload: project });
+      expect(unauthorized.statusCode).toBe(403);
+      expect(unauthorized.json().code).toBe("read-only");
+      expect(
+        (
+          await app.inject({
+            method: "PUT",
+            url: `/api/projects/${id}`,
+            headers: { authorization: "Bearer not-the-token-0123456789" },
+            payload: project,
+          })
+        ).statusCode,
+      ).toBe(403);
+      expect((await app.inject(`/api/projects/${id}`)).json().title).toBe("Saved rehearsal");
+      // The shared demo has no edit token: nobody can replace it over HTTP.
       expect(
         (
           await app.inject({
             method: "PUT",
             url: "/api/projects/default",
-            headers: { origin: "https://malicious.example" },
+            payload: createDemoProject(),
+          })
+        ).statusCode,
+      ).toBe(403);
+      expect(
+        (
+          await app.inject({
+            method: "PUT",
+            url: "/api/projects/p-does-not-exist",
+            headers: authorized,
+            payload: { ...project, id: "p-does-not-exist" },
+          })
+        ).statusCode,
+      ).toBe(404);
+      expect(
+        (
+          await app.inject({
+            method: "PUT",
+            url: `/api/projects/${id}`,
+            headers: { ...authorized, origin: "https://malicious.example" },
             payload: project,
           })
         ).statusCode,
@@ -128,11 +89,12 @@ describe("WebSocket protocol failures", () => {
   it("rejects malformed messages and reports unavailable microphone honestly", async () => {
     const dir = await mkdtemp(join(tmpdir(), "vizli-test-"));
     const app = await buildApp({ NODE_ENV: "test", DATA_DIR: dir });
+    const { id, editToken } = await createProject(app);
     const a = await connect(app);
     try {
       a.socket.send("{bad");
       await vi.waitFor(() => expect(a.json.some((m) => m.type === "error")).toBe(true));
-      await a.join("default");
+      await a.join(id, editToken);
       a.socket.send(JSON.stringify({ type: "listen", enabled: true }));
       await vi.waitFor(() => expect(a.json).toContainEqual({ type: "speech", state: "error" }));
       expect(
@@ -150,9 +112,10 @@ describe("explicit cue bursts", () => {
   it("accepts sequential deliberate cues within 150ms", async () => {
     const dir = await mkdtemp(join(tmpdir(), "vizli-test-"));
     const app = await buildApp({ NODE_ENV: "test", DATA_DIR: dir });
+    const { id, editToken } = await createProject(app);
     const a = await connect(app);
     try {
-      await a.join("default");
+      await a.join(id, editToken);
       a.cue("highlight revenue");
       await vi.waitFor(() => expect(a.actions()).toHaveLength(1));
       a.cue("highlight acquisition cost");
@@ -168,7 +131,7 @@ describe("explicit cue bursts", () => {
 
 describe("collaborative rooms over the session socket", () => {
   let dir: string;
-  let app: Awaited<ReturnType<typeof buildApp>> | undefined;
+  let app: App | undefined;
   const clients: TestClient[] = [];
   const open = async (env: NodeJS.ProcessEnv = {}) => {
     app = await buildApp({ NODE_ENV: "test", DATA_DIR: dir, ...env });
@@ -191,16 +154,17 @@ describe("collaborative rooms over the session socket", () => {
 
   it("syncs edits between peers, serves them over HTTP and persists both representations", async () => {
     await open();
+    const { id, editToken } = await createProject(app!);
     const a = await client();
     const b = await client();
-    const joinedA = await a.join("default");
-    expect(joinedA).toMatchObject({ projectId: "default", docId: expect.any(String) });
-    await b.join("default");
+    const joinedA = await a.join(id, editToken);
+    expect(joinedA).toMatchObject({ projectId: id, docId: expect.any(String), role: "editor" });
+    await b.join(id, editToken);
     expect(b.json.find((m) => m.type === "joined").docId).toBe(joinedA.docId);
     relabel(a.doc, "Shared revenue");
     await vi.waitFor(() => expect(toPlain(b.doc).scenes[0]!.objects[0]!.label).toBe("Shared revenue"));
     await vi.waitFor(async () =>
-      expect((await app!.inject("/api/projects/default")).json().scenes[0].objects[0].label).toBe(
+      expect((await app!.inject(`/api/projects/${id}`)).json().scenes[0].objects[0].label).toBe(
         "Shared revenue",
       ),
     );
@@ -208,9 +172,12 @@ describe("collaborative rooms over the session socket", () => {
     b.socket.close();
     await app!.close();
     app = undefined;
-    const saved = JSON.parse(await readFile(join(dir, "default.json"), "utf8"));
+    const saved = JSON.parse(await readFile(join(dir, `${id}.json`), "utf8"));
     expect(saved.scenes[0].objects[0].label).toBe("Shared revenue");
-    expect((await stat(join(dir, "default.yjs"))).size).toBeGreaterThan(0);
+    expect((await stat(join(dir, `${id}.yjs`))).size).toBeGreaterThan(0);
+    const access = JSON.parse(await readFile(join(dir, `${id}.access.json`), "utf8"));
+    expect(access.editTokenHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(JSON.stringify(access)).not.toContain(editToken);
   });
 
   it("requires a single join before other messages and ignores pre-join binary frames", async () => {
@@ -228,10 +195,11 @@ describe("collaborative rooms over the session socket", () => {
 
   it("fans temporary effects out to peers without leaking the presenter's transcript", async () => {
     await open();
+    const { id, editToken } = await createProject(app!);
     const a = await client();
     const b = await client();
-    await a.join("default");
-    await b.join("default");
+    await a.join(id, editToken);
+    await b.join(id);
     const bBefore = b.json.length;
     a.cue("highlight revenue");
     await vi.waitFor(() => expect(a.actions()).toHaveLength(1));
@@ -248,19 +216,25 @@ describe("collaborative rooms over the session socket", () => {
 
   it("converges a joined client onto a project imported over HTTP", async () => {
     await open();
+    const { id, editToken } = await createProject(app!);
     const a = await client();
-    await a.join("default");
-    const project = createDemoProject();
-    project.title = "Imported while joined";
-    const response = await app!.inject({ method: "PUT", url: "/api/projects/default", payload: project });
+    await a.join(id, editToken);
+    const project = { ...createDemoProject(), id, title: "Imported while joined" };
+    const response = await app!.inject({
+      method: "PUT",
+      url: `/api/projects/${id}`,
+      headers: { authorization: `Bearer ${editToken}` },
+      payload: project,
+    });
     expect(response.json()).toEqual({ ok: true, mode: "room" });
     await vi.waitFor(() => expect(toPlain(a.doc).title).toBe("Imported while joined"));
   });
 
   it("closes on oversized sync frames and drops awareness floods without closing", async () => {
     await open({ COLLAB_SYNC_MAX_MESSAGE_BYTES: "512" });
+    const { id, editToken } = await createProject(app!);
     const a = await client();
-    await a.join("default");
+    await a.join(id, editToken);
     const awareness = new Awareness(a.doc);
     awareness.setLocalState({ name: "A" });
     const encoder = encoding.createEncoder();
@@ -287,16 +261,18 @@ describe("collaborative rooms over the session socket", () => {
     expect(a.errors().filter((code) => code === "bad-frame").length).toBeGreaterThanOrEqual(4);
   });
 
-  it("creates projects with fresh ids and reports unknown ones", async () => {
+  it("creates projects with fresh ids and edit tokens, and reports unknown ones", async () => {
     await open();
     const created = await app!.inject({ method: "POST", url: "/api/projects", payload: { template: "demo" } });
     expect(created.statusCode).toBe(201);
-    const { id } = created.json();
+    const { id, editToken } = created.json();
     expect(id).toMatch(/^p-[0-9a-f]{16}$/);
+    expect(editToken).toMatch(/^[A-Za-z0-9_-]{32}$/);
     const project = { ...createDemoProject(), title: "Own copy" };
     const second = await app!.inject({ method: "POST", url: "/api/projects", payload: { project } });
     expect(second.statusCode).toBe(201);
     expect(second.json().id).not.toBe(id);
+    expect(second.json().editToken).not.toBe(editToken);
     const read = await app!.inject(`/api/projects/${second.json().id}`);
     expect(read.json()).toMatchObject({ id: second.json().id, title: "Own copy" });
     expect((await app!.inject(`/api/projects/${id}`)).json().id).toBe(id);
@@ -304,7 +280,8 @@ describe("collaborative rooms over the session socket", () => {
     expect((await app!.inject("/api/projects/bad.id")).statusCode).toBe(400);
     expect((await app!.inject({ method: "POST", url: "/api/projects", payload: { template: "other" } })).statusCode).toBe(400);
     const a = await client();
-    await a.join(id);
+    const joined = await a.join(id);
+    expect(joined.role).toBe("viewer");
     expect(toPlain(a.doc).id).toBe(id);
     expect((await app!.inject("/api/status")).json().collab).toEqual({ rooms: 1 });
   });

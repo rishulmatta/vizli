@@ -83,6 +83,10 @@ function client(name: string): Client {
 function member(c: Client, name: string, onPlain = vi.fn()) {
   return { socket: c.socket, clientId: `c-${name}`, userId: `u-${name}`, name, color: "#d2432f", onPlain };
 }
+const TOKEN = "test-edit-token-0123456789";
+const PROJECT = "shared";
+/** A join request that creates (or opens) an editable project with the test token. */
+const open = (id = PROJECT) => ({ projectId: id, seed: { ...createDemoProject(), id }, token: TOKEN });
 function relabel(doc: Y.Doc, sceneIndex: number, objectIndex: number, label: string) {
   const scenes = doc.getMap<unknown>(PROJECT_ROOT).get("scenes") as Y.Array<Y.Map<unknown>>;
   const objects = scenes.get(sceneIndex).get("objects") as Y.Array<Y.Map<unknown>>;
@@ -110,9 +114,12 @@ describe("RoomRegistry loading", () => {
     expect(await store.exists("legacy")).toBe("yjs");
     await expect(registry.join({ projectId: "nope" }, member(client("b"), "b"))).rejects.toMatchObject({ code: "project-not-found" });
     const seed = { ...createDemoProject(), id: "fresh", title: "Seeded" };
-    const seeded = await registry.join({ projectId: "fresh", seed }, member(client("c"), "c"));
+    await expect(registry.join({ projectId: "fresh", seed }, member(client("c"), "c"))).rejects.toMatchObject({ code: "invalid-seed" });
+    const seeded = await registry.join({ projectId: "fresh", seed, token: TOKEN }, member(client("c"), "c"));
     expect(seeded.project.title).toBe("Seeded");
-    await expect(registry.join({ projectId: "other", seed }, member(client("d"), "d"))).rejects.toMatchObject({ code: "invalid-seed" });
+    expect(seeded.sockets.values().next().value?.role).toBe("editor");
+    expect(await store.loadAccess("fresh")).toMatchObject({ v: 1 });
+    await expect(registry.join({ projectId: "other", seed, token: TOKEN }, member(client("d"), "d"))).rejects.toMatchObject({ code: "invalid-seed" });
     const demo = await registry.join({ projectId: "default" }, member(client("e"), "e"));
     expect(demo.project.scenes.length).toBe(createDemoProject().scenes.length);
     expect(registry.size).toBe(3);
@@ -120,10 +127,8 @@ describe("RoomRegistry loading", () => {
   });
   it("caps project creation per hour and preserves unreadable files", async () => {
     const registry = new RoomRegistry(store, { ...limits, projectsCreatedPerHour: 1 }, log);
-    await registry.join({ projectId: "p1", seed: { ...createDemoProject(), id: "p1" } }, member(client("a"), "a"));
-    await expect(
-      registry.join({ projectId: "p2", seed: { ...createDemoProject(), id: "p2" } }, member(client("b"), "b")),
-    ).rejects.toMatchObject({ code: "project-limit" });
+    await registry.join(open("p1"), member(client("a"), "a"));
+    await expect(registry.join(open("p2"), member(client("b"), "b"))).rejects.toMatchObject({ code: "project-limit" });
     await writeFile(join(dir, "broken.json"), "{nope");
     await expect(registry.join({ projectId: "broken" }, member(client("c"), "c"))).rejects.toMatchObject({ code: "project-unreadable" });
     expect(await readFile(join(dir, "broken.json"), "utf8")).toBe("{nope");
@@ -132,7 +137,7 @@ describe("RoomRegistry loading", () => {
   it("reloads from the stored document rather than the plain file", async () => {
     const registry = new RoomRegistry(store, limits, log);
     const a = client("a");
-    const room = await registry.join({ projectId: "default" }, member(a, "a"));
+    const room = await registry.join(open("doc"), member(a, "a"));
     a.attach(room);
     await vi.waitFor(() => expect(a.plain().scenes.length).toBeGreaterThan(0));
     relabel(a.doc, 0, 0, "From the document");
@@ -141,12 +146,12 @@ describe("RoomRegistry loading", () => {
     await store.save({ ...room.project, title: "Hand edited plain file" });
     await registry.closeAll();
     const second = new RoomRegistry(store, limits, log);
-    const reloaded = await second.join({ projectId: "default" }, member(client("b"), "b"));
+    const reloaded = await second.join({ projectId: "doc", token: TOKEN }, member(client("b"), "b"));
     expect(reloaded.project.scenes[0].objects[0].label).toBe("From the document");
     expect(reloaded.project.title).not.toBe("Hand edited plain file");
-    expect(await second.readPlain("default")).toMatchObject({ title: reloaded.project.title });
+    expect(await second.readPlain("doc")).toMatchObject({ title: reloaded.project.title });
     await second.closeAll();
-    expect((await second.readPlain("default"))?.scenes[0].objects[0].label).toBe("From the document");
+    expect((await second.readPlain("doc"))?.scenes[0].objects[0].label).toBe("From the document");
   });
 });
 
@@ -155,8 +160,8 @@ describe("DocRoom relay", () => {
     const registry = new RoomRegistry(store, limits, log);
     const a = client("a"), b = client("b");
     const onA = vi.fn(), onB = vi.fn();
-    const room = await registry.join({ projectId: "default" }, member(a, "a", onA));
-    await registry.join({ projectId: "default" }, member(b, "b", onB));
+    const room = await registry.join(open(), member(a, "a", onA));
+    await registry.join(open(), member(b, "b", onB));
     a.attach(room);
     b.attach(room);
     await vi.waitFor(() => {
@@ -232,27 +237,27 @@ describe("persistence and eviction", () => {
   it("debounces writes, honours the max wait, and evicts idle rooms after a final flush", async () => {
     const registry = new RoomRegistry(store, limits, log);
     const a = client("a");
-    const room = await registry.join({ projectId: "default" }, member(a, "a"));
+    const room = await registry.join(open(), member(a, "a"));
     a.attach(room);
     await vi.waitFor(() => expect(a.plain().scenes.length).toBeGreaterThan(0));
-    const before = (await stat(join(dir, "default.yjs"))).mtimeMs;
+    const before = (await stat(join(dir, "shared.yjs"))).mtimeMs;
     const start = Date.now();
     // Continuous edits every 10 ms never let the 20 ms debounce settle; the 60 ms max wait must still write.
     let wrote = false;
     while (Date.now() - start < 120) {
       relabel(a.doc, 0, 0, `tick ${Date.now()}`);
       await new Promise((r) => setTimeout(r, 10));
-      if ((await stat(join(dir, "default.yjs"))).mtimeMs > before) wrote = true;
+      if ((await stat(join(dir, "shared.yjs"))).mtimeMs > before) wrote = true;
     }
     expect(wrote).toBe(true);
     relabel(a.doc, 0, 0, "final label");
     room.leave(a.socket);
-    await vi.waitFor(() => expect(registry.peek("default")).toBeUndefined(), { timeout: 2000 });
-    expect(JSON.parse(await readFile(join(dir, "default.json"), "utf8")).scenes[0].objects[0].label).toBe("final label");
+    await vi.waitFor(() => expect(registry.peek(PROJECT)).toBeUndefined(), { timeout: 2000 });
+    expect(JSON.parse(await readFile(join(dir, "shared.json"), "utf8")).scenes[0].objects[0].label).toBe("final label");
     const doc = new Y.Doc();
-    Y.applyUpdate(doc, await readFile(join(dir, "default.yjs")));
+    Y.applyUpdate(doc, await readFile(join(dir, "shared.yjs")));
     expect(toPlain(doc).scenes[0].objects[0].label).toBe("final label");
-    const reopened = await registry.join({ projectId: "default" }, member(client("b"), "b"));
+    const reopened = await registry.join(open(), member(client("b"), "b"));
     expect(reopened.project.scenes[0].objects[0].label).toBe("final label");
     await registry.closeAll();
   });
@@ -260,11 +265,9 @@ describe("persistence and eviction", () => {
     const registry = new RoomRegistry(store, { ...limits, maxRooms: 1, roomIdleMs: 10_000 }, log);
     const a = client("a");
     const first = await registry.join({ projectId: "default" }, member(a, "a"));
-    await expect(
-      registry.join({ projectId: "second", seed: { ...createDemoProject(), id: "second" } }, member(client("b"), "b")),
-    ).rejects.toMatchObject({ code: "rooms-full" });
+    await expect(registry.join(open("second"), member(client("b"), "b"))).rejects.toMatchObject({ code: "rooms-full" });
     first.leave(a.socket);
-    const second = await registry.join({ projectId: "second", seed: { ...createDemoProject(), id: "second" } }, member(client("b"), "b"));
+    const second = await registry.join(open("second"), member(client("b"), "b"));
     expect(second.projectId).toBe("second");
     expect(registry.peek("default")).toBeUndefined();
     await registry.closeAll();
@@ -273,5 +276,109 @@ describe("persistence and eviction", () => {
     const doc = new Y.Doc();
     fromPlain(doc, createDemoProject(), "load");
     expect(doc.getMap(PROJECT_ROOT).get("scenes")).toBeInstanceOf(Y.Array);
+  });
+});
+
+describe("access control and deletion", () => {
+  it("creates projects with hashed edit tokens and reports roles for tokens, viewers, the demo and legacy files", async () => {
+    const registry = new RoomRegistry(store, limits, log);
+    const { editToken } = await registry.createProject({ ...createDemoProject(), id: "owned" });
+    expect(editToken.length).toBeGreaterThanOrEqual(16);
+    const access = JSON.parse(await readFile(join(dir, "owned.access.json"), "utf8"));
+    expect(access.editTokenHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(JSON.stringify(access)).not.toContain(editToken);
+    expect(await registry.authorize("owned", editToken)).toBe("editor");
+    expect(await registry.authorize("owned", "wrong-token-0123456789")).toBe("viewer");
+    expect(await registry.authorize("owned", undefined)).toBe("viewer");
+    expect(await registry.authorize("default", editToken)).toBe("viewer");
+    expect(await registry.authorize("missing", editToken)).toBeNull();
+    await store.save({ ...createDemoProject(), id: "legacy" });
+    expect(await registry.authorize("legacy", undefined)).toBe("editor");
+    const viewer = client("v");
+    const room = await registry.join({ projectId: "owned" }, member(viewer, "v"));
+    expect(room.sockets.get(viewer.socket)?.role).toBe("viewer");
+    const editor = client("e");
+    await registry.join({ projectId: "owned", token: editToken }, member(editor, "e"));
+    expect(room.sockets.get(editor.socket)?.role).toBe("editor");
+    await registry.closeAll();
+  });
+  it("refuses viewer writes without applying them, and refuses writes past the size cap", async () => {
+    const registry = new RoomRegistry(store, { ...limits, maxDocBytes: 12_000 }, log);
+    const editor = client("e"), viewer = client("v");
+    const room = await registry.join(open("capped"), member(editor, "e"));
+    await registry.join({ projectId: "capped" }, member(viewer, "v"));
+    editor.attach(room);
+    viewer.attach(room);
+    await vi.waitFor(() => expect(viewer.plain().scenes.length).toBeGreaterThan(0));
+    const before = room.version;
+    expect(() => relabel(viewer.doc, 0, 0, "Vandalised")).toThrow(RoomError);
+    expect(room.version).toBe(before);
+    expect(room.project.scenes[0].objects[0].label).not.toBe("Vandalised");
+    relabel(editor.doc, 0, 0, "By the editor");
+    expect(room.project.scenes[0].objects[0].label).toBe("By the editor");
+    // The viewer's replica diverged (its refused write still exists locally); the room and the editor never saw it.
+    expect(editor.plain().scenes[0].objects[0].label).toBe("By the editor");
+    const scenes = editor.doc.getMap<unknown>(PROJECT_ROOT).get("scenes") as Y.Array<Y.Map<unknown>>;
+    const objects = scenes.get(0).get("objects") as Y.Array<Y.Map<unknown>>;
+    let thrown: unknown;
+    try {
+      editor.doc.transact(() => objects.get(0).set("text", "x".repeat(20_000)), "test");
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toMatchObject({ code: "document-full" });
+    expect(room.project.scenes[0].objects[0].text?.length ?? 0).toBeLessThan(20_000);
+    // The editor's replica now holds a change the room refused, so its later updates would never apply; a fresh
+    // replica (what a client does after CLOSE_WRITE_REFUSED) keeps editing.
+    const fresh = client("f");
+    await registry.join({ projectId: "capped", token: TOKEN }, member(fresh, "f"));
+    fresh.attach(room);
+    await vi.waitFor(() => expect(fresh.plain().scenes.length).toBeGreaterThan(0));
+    relabel(fresh.doc, 0, 0, "Still editable");
+    expect(room.project.scenes[0].objects[0].label).toBe("Still editable");
+    await expect(
+      registry.createProject({ ...createDemoProject(), id: "too-big", cues: [], scenes: [{ ...createDemoProject().scenes[0]!, objects: createDemoProject().scenes[0]!.objects.map((o) => ({ ...o, text: "y".repeat(9_000) })) }] }),
+    ).rejects.toMatchObject({ code: "document-full" });
+    await room.flush();
+    const size = room.approximateBytes;
+    await registry.closeAll();
+    // A document already over a (tightened) cap still accepts small updates up to 25% past it, so it can be cleaned up.
+    const tight = new RoomRegistry(store, { ...limits, maxDocBytes: size - 100 }, log);
+    const c = client("c");
+    const reopened = await tight.join({ projectId: "capped", token: TOKEN }, member(c, "c"));
+    c.attach(reopened);
+    await vi.waitFor(() => expect(c.plain().scenes.length).toBeGreaterThan(0));
+    relabel(c.doc, 0, 0, "Cleanup allowed");
+    expect(reopened.project.scenes[0].objects[0].label).toBe("Cleanup allowed");
+    let overflow: unknown;
+    try {
+      c.doc.transact(() => ((c.doc.getMap<unknown>(PROJECT_ROOT).get("scenes") as Y.Array<Y.Map<unknown>>).get(0).get("objects") as Y.Array<Y.Map<unknown>>).get(0).set("text", "w".repeat(2_000)), "test");
+    } catch (error) {
+      overflow = error;
+    }
+    expect(overflow).toMatchObject({ code: "document-full" });
+    await tight.closeAll();
+  });
+  it("deletes a live project: sockets are told and closed, files are removed, the demo resets", async () => {
+    const registry = new RoomRegistry(store, limits, log);
+    const a = client("a");
+    const room = await registry.join(open("doomed"), member(a, "a"));
+    a.attach(room);
+    await room.flush();
+    expect(await store.exists("doomed")).toBe("yjs");
+    expect(await registry.deleteProject("doomed")).toBe(true);
+    expect(a.socket.closed).toMatchObject({ code: 4003 });
+    expect(a.socket.frames.some((f) => "json" in f && (f.json as { code?: string }).code === "project-deleted")).toBe(true);
+    expect(await store.exists("doomed")).toBeNull();
+    expect(await store.loadAccess("doomed")).toBeNull();
+    expect(registry.peek("doomed")).toBeUndefined();
+    expect(await registry.deleteProject("doomed")).toBe(false);
+    const demo = await registry.join({ projectId: "default" }, member(client("d"), "d"));
+    await demo.flush();
+    expect(await registry.deleteProject("default")).toBe(true);
+    expect(await store.exists("default")).toBeNull();
+    const again = await registry.join({ projectId: "default" }, member(client("e"), "e"));
+    expect(again.project.scenes.length).toBe(createDemoProject().scenes.length);
+    await registry.closeAll();
   });
 });

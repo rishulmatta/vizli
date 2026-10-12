@@ -14,6 +14,7 @@
 #   VIZLI_IMAGE         cr.<region>.nebius.cloud/<registry-id>/vizli:<tag>
 #   NEBIUS_API_KEY_SECRET, NVIDIA_API_KEY_SECRET   Nebius secret selectors holding the two keys
 # Optional:
+#   ADMIN_TOKEN_SECRET  Nebius secret selector for ADMIN_TOKEN (enables DELETE /api/projects/:id, see docs/SECURITY.md)
 #   VIZLI_ENDPOINT_NAME (default vizli), VIZLI_PLATFORM (default cpu-d3), VIZLI_PRESET (default 4vcpu-16gb)
 #   PUBLIC_ORIGIN       https://... managed URL from a previous `create`; required so the browser
 #                       app is an allowed origin (see README: the URL is only known after creation)
@@ -50,6 +51,7 @@ case "${1:-}" in
       --env HOST=0.0.0.0
       --env PORT=3001
       --env NODE_ENV=production
+      --env TRUST_PROXY=1
       --env "ALLOWED_ORIGINS=$origin"
       --env "NEBIUS_MODEL=$core"
       --env "NEBIUS_FAST_MODEL=$fast"
@@ -58,6 +60,7 @@ case "${1:-}" in
       --env-secret "NEBIUS_API_KEY=$NEBIUS_API_KEY_SECRET"
       --env-secret "NVIDIA_API_KEY=$NVIDIA_API_KEY_SECRET"
     )
+    if [ -n "${ADMIN_TOKEN_SECRET:-}" ]; then args+=(--env-secret "ADMIN_TOKEN=$ADMIN_TOKEN_SECRET"); fi
     echo "Dry run:"; nebius "${args[@]}" --dry-run
     if [ "${DRY_RUN:-1}" = "0" ]; then
       echo "Creating. This endpoint bills from create until delete; check https://nebius.com/prices for $platform $preset."

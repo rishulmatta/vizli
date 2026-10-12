@@ -59,6 +59,8 @@ export const SceneObjectSchema = z
         "Use an HTTP image URL or supported image data URL",
       )
       .optional(),
+    // The schema accepts any http(s) URL so older projects stay valid; clients only load
+    // sources that pass `isAllowedImageSource`, so viewers never contact third-party hosts.
     anchor: z
       .object({ targetId: id, kind: z.literal("x-axis") })
       .strict()
@@ -511,6 +513,20 @@ export const ClientMessageSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("animation.cancelled"), actionId: id }).strict(),
 ]);
 export type ClientMessage = z.infer<typeof ClientMessageSchema>;
+/**
+ * What a connection may do with a project. Editors hold the project's edit token (a capability carried in
+ * `join.token` and in `#edit=` share links); everyone else, and everyone on the shared demo, is a viewer.
+ */
+export type CollabRole = "editor" | "viewer";
+/** Application WebSocket close codes; clients react to these differently from transport failures. */
+export const CLOSE_TOO_MANY_CONNECTIONS = 4001;
+export const CLOSE_JOIN_TIMEOUT = 4002;
+export const CLOSE_PROJECT_DELETED = 4003;
+/**
+ * A write was refused (view-only link or full project). Later updates from that replica would depend on the
+ * refused one, so the server closes the socket and the client discards its local copy before rejoining.
+ */
+export const CLOSE_WRITE_REFUSED = 4004;
 export type ServerMessage =
   | { type: "ready"; mode: "demo" | "live" }
   | { type: "transcript"; text: string; final: boolean }
@@ -518,9 +534,35 @@ export type ServerMessage =
   | { type: "action"; action: VisualAction }
   | { type: "skipped"; reason: string; served?: ServedBy }
   | { type: "error"; message: string; code?: string }
-  | { type: "joined"; projectId: string; docId: string; version: number }
+  | { type: "joined"; projectId: string; docId: string; version: number; role: CollabRole }
   | { type: "effect"; action: VisualAction; clientId: string; name: string }
   | { type: "speech"; state: "listening" | "off" | "error" };
+/** Image hosts a client may load besides embedded data URLs. Everything else renders as a blocked placeholder. */
+export const ALLOWED_IMAGE_HOSTS = ["upload.wikimedia.org", "thumb.wikimedia.org"] as const;
+/**
+ * True for sources a browser may fetch: embedded image data URLs and HTTPS images on the allowed hosts.
+ * Loading arbitrary remote images would reveal every viewer's address to whoever controls the URL, so the
+ * canvas never does it; the schema still accepts other URLs so older projects remain valid.
+ */
+export function isAllowedImageSource(src: string | undefined): boolean {
+  if (!src) return false;
+  if (/^data:image\/(png|jpeg|webp|gif);base64,/i.test(src)) return true;
+  try {
+    const url = new URL(src);
+    return url.protocol === "https:" && (ALLOWED_IMAGE_HOSTS as readonly string[]).includes(url.hostname);
+  } catch {
+    return false;
+  }
+}
+/** Hostname of a blocked remote image source, for messages; null for allowed or unparsable sources. */
+export function blockedImageHost(src: string | undefined): string | null {
+  if (!src || isAllowedImageSource(src)) return null;
+  try {
+    return new URL(src).hostname || null;
+  } catch {
+    return null;
+  }
+}
 export function targetIds(scene: Scene): string[] {
   return scene.objects.flatMap((object) =>
     objectTargets(object).map((target) => target.id),

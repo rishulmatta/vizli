@@ -24,8 +24,10 @@ async function tempDir() {
 afterEach(async () => {
   for (const dir of tempDirs.splice(0)) await rm(dir, { recursive: true, force: true });
 });
-/** Session messages other than `join` require a joined project room. */
-async function joinDefault(socket: WebSocket) {
+/** Session messages other than `join` require a joined project room; the microphone needs an editor's token. */
+async function joinEditable(app: Awaited<ReturnType<typeof buildApp>>, socket: WebSocket) {
+  const created = await app.inject({ method: "POST", url: "/api/projects", payload: { template: "demo" } });
+  const { id, editToken } = created.json() as { id: string; editToken: string };
   const joined = new Promise<void>((resolve) => {
     const handler = (data: Buffer, isBinary: boolean) => {
       if (isBinary || JSON.parse(data.toString()).type !== "joined") return;
@@ -35,7 +37,7 @@ async function joinDefault(socket: WebSocket) {
     socket.on("message", handler);
   });
   socket.send(
-    JSON.stringify({ type: "join", projectId: "default", userId: "user-1", clientId: "client-1", name: "Tester", color: "#d2432f" }),
+    JSON.stringify({ type: "join", projectId: id, token: editToken, userId: "user-1", clientId: "client-1", name: "Tester", color: "#d2432f" }),
   );
   await joined;
 }
@@ -44,6 +46,9 @@ const limits: UsageLimits = {
   voiceSeconds: 10,
   llmHourly: 2,
   llmConcurrent: 1,
+  llmHourlyPerClient: 2,
+  llmConcurrentPerClient: 1,
+  voiceConcurrentPerClient: 1,
 };
 afterEach(() => {
   vi.useRealTimers();
@@ -56,6 +61,9 @@ describe("in-process usage limits", () => {
       voiceSeconds: 600,
       llmHourly: 1200,
       llmConcurrent: 3,
+      llmHourlyPerClient: 120,
+      llmConcurrentPerClient: 2,
+      voiceConcurrentPerClient: 2,
     });
     expect(
       limitsFromEnv({ MAX_CONCURRENT_LLM_REQUESTS: "0" }).llmConcurrent,
@@ -69,11 +77,39 @@ describe("in-process usage limits", () => {
     release();
     release();
     guard.acquireLLM()();
-    expect(guard.snapshot()).toEqual({ voice: 0, llm: 0, attempts: 2 });
+    expect(guard.snapshot()).toMatchObject({ voice: 0, llm: 0, attempts: 2 });
     expect(() => guard.acquireLLM()).toThrow("hourly");
     now = 3600000;
     guard.acquireLLM()();
     expect(guard.snapshot().attempts).toBe(1);
+  });
+  it("caps each client before the shared budget so one visitor cannot drain it", () => {
+    let now = 0;
+    const guard = new UsageGuard({ ...limits, llmHourly: 3, llmHourlyPerClient: 1, voiceConcurrent: 2, voiceConcurrentPerClient: 1 }, () => now);
+    const a = guard.forClient("10.0.0.1"), b = guard.forClient("10.0.0.2");
+    a.acquireLLM()();
+    expect(() => a.acquireLLM()).toThrow("Your hourly");
+    b.acquireLLM()();
+    guard.forClient("10.0.0.3").acquireLLM()();
+    // The shared budget is exhausted by three different clients; a fourth is told about the server limit.
+    expect(() => guard.forClient("10.0.0.4").acquireLLM()).toThrow("server’s hourly");
+    expect(guard.snapshot()).toMatchObject({ attempts: 3, clients: 4 });
+    now = 3_600_001;
+    a.acquireLLM()();
+    const voiceA = a.acquireVoice();
+    expect(() => a.acquireVoice()).toThrow("maximum number of microphones");
+    const voiceB = b.acquireVoice();
+    expect(() => guard.forClient("10.0.0.3").acquireVoice()).toThrow("All voice");
+    voiceA();
+    voiceA();
+    voiceB();
+    expect(guard.snapshot().voice).toBe(0);
+    // Concurrency per client: one in flight blocks the same client but not another.
+    const roomy = new UsageGuard({ ...limits, llmHourly: 10, llmHourlyPerClient: 10, llmConcurrent: 2, llmConcurrentPerClient: 1 });
+    const inFlight = roomy.forClient("10.0.0.9").acquireLLM();
+    expect(() => roomy.forClient("10.0.0.9").acquireLLM()).toThrow("in progress");
+    roomy.forClient("10.0.0.8").acquireLLM()();
+    inFlight();
   });
   it("counts failed model attempts and releases both cue and planning capacity", async () => {
     const guard = new UsageGuard(limits);
@@ -175,7 +211,7 @@ describe("in-process usage limits", () => {
     );
     await new Promise<void>((resolve) => socket.once("open", () => resolve()));
     try {
-      await joinDefault(socket);
+      await joinEditable(app, socket);
       socket.send(JSON.stringify({ type: "listen", enabled: true }));
       await vi.waitFor(() => expect(connections).toHaveLength(1));
       expect(guard.snapshot().voice).toBe(1);
@@ -201,7 +237,7 @@ describe("in-process usage limits", () => {
     );
     await app.ready();
     const socket = await app.injectWS("/api/session");
-    await joinDefault(socket);
+    await joinEditable(app, socket);
     socket.send(JSON.stringify({ type: "listen", enabled: true }));
     await vi.waitFor(() => expect(guard.snapshot().voice).toBe(1));
     await app.close();

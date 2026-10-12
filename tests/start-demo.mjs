@@ -7,7 +7,8 @@ import { createRequire } from 'node:module';
 import { dirname } from 'node:path';
 const root = resolve(import.meta.dirname, '..');
 const data = await mkdtemp(join(tmpdir(), 'vizli-e2e-'));
-const env = { ...process.env, DATA_DIR: data, HOST: '127.0.0.1', PORT: '3002', ALLOWED_ORIGINS: 'http://127.0.0.1:5174', NEBIUS_API_KEY: '', NVIDIA_API_KEY: '', VITE_SUPABASE_URL: '', VITE_SUPABASE_ANON_KEY: '' };
+// Every browser in the suite connects from 127.0.0.1, so the per-client caps (meant for one visitor) are raised here.
+const env = { ...process.env, DATA_DIR: data, HOST: '127.0.0.1', PORT: '3002', ALLOWED_ORIGINS: 'http://127.0.0.1:5174', NEBIUS_API_KEY: '', NVIDIA_API_KEY: '', VITE_SUPABASE_URL: '', VITE_SUPABASE_ANON_KEY: '', MAX_PROJECTS_CREATED_PER_HOUR_PER_CLIENT: '10000', MAX_PROJECTS_CREATED_PER_HOUR: '10000', MAX_SOCKETS_PER_CLIENT: '500' };
 const serverRequire=createRequire(join(root,'apps/server/package.json'));
 const webRequire=createRequire(join(root,'apps/web/package.json'));
 const children = [

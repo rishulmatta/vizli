@@ -1,12 +1,15 @@
 import { useEffect, useState } from "react";
-import type { SceneObject } from "@vizli/shared";
+import { blockedImageHost, type SceneObject } from "@vizli/shared";
 import MathText from "./MathText";
 export function ImageRenderer({ object }: { object: SceneObject }) {
   const [failed, setFailed] = useState(false);
   useEffect(() => setFailed(false), [object.src]);
+  // Only embedded data and the allowed hosts are fetched; anything else would reveal every viewer's address.
+  const blockedHost = blockedImageHost(object.src);
+  const loadable = !!object.src && !failed && !blockedHost;
   return (
     <div className={`viz-image-content ${object.anchor ? "is-anchored" : ""}`}>
-      {object.src && !failed ? (
+      {loadable ? (
         <img
           src={object.src}
           alt={object.label}
@@ -14,17 +17,19 @@ export function ImageRenderer({ object }: { object: SceneObject }) {
           onError={() => setFailed(true)}
         />
       ) : (
-        <div className="viz-image-fallback">
+        <div className="viz-image-fallback" data-image-blocked={blockedHost ?? undefined}>
           <span>▧</span>
           <strong>{object.label}</strong>
           <small>
-            {failed
-              ? "Image could not be loaded"
-              : "Add an image URL in the inspector"}
+            {blockedHost
+              ? `Images from ${blockedHost} are not displayed`
+              : failed
+                ? "Image could not be loaded"
+                : "Add an image URL in the inspector"}
           </small>
         </div>
       )}
-      {object.src && !failed && !object.anchor && (
+      {loadable && !object.anchor && (
         <div className="viz-image-caption">{object.label}</div>
       )}
     </div>

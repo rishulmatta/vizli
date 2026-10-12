@@ -9,14 +9,15 @@ import { newWhiteboard, readProject, selectScene } from './ui';
 type Peer = { context: BrowserContext; page: Page };
 const SYNC = { timeout: 10_000 };
 
-async function openPeer(browser: Browser, projectId: string, seed?: ReturnType<typeof createDemoProject>): Promise<Peer> {
+/** Opens `/p/<id>`; with `editToken` the link carries `#edit=<token>` and the peer joins as an editor. */
+async function openPeer(browser: Browser, projectId: string, seed?: ReturnType<typeof createDemoProject>, editToken?: string): Promise<Peer> {
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
   const page = await context.newPage();
   if (seed)
     await context.addInitScript((p) => {
       if (!localStorage.getItem('vizli.project.v1')) localStorage.setItem('vizli.project.v1', JSON.stringify(p));
     }, seed);
-  await page.goto(`/p/${projectId}`);
+  await page.goto(editToken ? `/p/${projectId}#edit=${editToken}` : `/p/${projectId}`);
   await expect(page.getByTestId('scene-canvas')).toBeVisible(SYNC);
   await expect(page.locator('[data-object-id="revenue"]')).toBeVisible(SYNC);
   return { context, page };
@@ -62,7 +63,10 @@ test.describe('collaboration', () => {
     const seed = createDemoProject();
     seed.id = projectId;
     a = await openPeer(browser, projectId, seed);
-    b = await openPeer(browser, projectId);
+    // A minted the project's edit token when it seeded the project; B needs the edit link to collaborate.
+    const token = await a.page.evaluate((id) => JSON.parse(localStorage.getItem('vizli.edit.v1') ?? '{}')[id] as string | undefined, projectId);
+    expect(token).toBeTruthy();
+    b = await openPeer(browser, projectId, undefined, token);
   });
   test.afterEach(async () => {
     await a.context.close();
@@ -172,14 +176,47 @@ test.describe('collaboration', () => {
     await expect(b.page.locator('[data-peer-cursor]')).toHaveCount(1, SYNC);
   });
 
-  test('share link copies the project URL and the roster counts peers', async () => {
+  test('share links copy the edit link and the view link, and the roster counts peers', async () => {
     await a.context.grantPermissions(['clipboard-read', 'clipboard-write']);
     await expect(a.page.getByTestId('peer-avatar')).toHaveCount(1, SYNC);
     await a.page.getByTestId('share-link').click();
-    const text = await a.page.evaluate(() => navigator.clipboard.readText());
-    expect(text.endsWith(`/p/${projectId}`)).toBe(true);
+    const edit = await a.page.evaluate(() => navigator.clipboard.readText());
+    expect(edit).toContain(`/p/${projectId}#edit=`);
+    expect(a.page.url()).not.toContain('#edit=');
+    await a.page.getByTestId('share-view-link').click();
+    const view = await a.page.evaluate(() => navigator.clipboard.readText());
+    expect(view.endsWith(`/p/${projectId}`)).toBe(true);
     await b.context.close();
     await expect(a.page.getByTestId('peer-avatar')).toHaveCount(0, { timeout: 20_000 });
+  });
+
+  test('a link without the edit token opens view only, follows live edits, and "Make a copy" yields an editable project', async ({ browser }) => {
+    const viewer = await openPeer(browser, projectId);
+    try {
+      await expect(viewer.page.getByTestId('role-pill')).toHaveText('View only', SYNC);
+      await expect(viewer.page.getByTestId('cue-input')).toBeDisabled();
+      await expect(viewer.page.getByTestId('ink-tool-pen')).toHaveCount(0);
+      await expect(viewer.page.getByTestId('share-view-link')).toHaveCount(0);
+      const revenue = viewer.page.locator('[data-object-id="revenue"]');
+      const before = (await revenue.boundingBox())!;
+      await dragBy(viewer.page, revenue, 80, 0);
+      await viewer.page.waitForTimeout(300);
+      expect(Math.abs((await revenue.boundingBox())!.x - before.x)).toBeLessThan(2);
+      // The editor's changes still arrive live.
+      await dragBy(a.page, a.page.locator('[data-object-id="revenue"]'), 60, 0);
+      await expect.poll(async () => (await revenue.boundingBox())!.x - before.x, SYNC).toBeGreaterThan(40);
+      await viewer.page.getByTestId('fork-project').click();
+      await expect.poll(() => viewer.page.url(), SYNC).not.toContain(`/p/${projectId}`);
+      await expect(viewer.page.getByTestId('scene-canvas')).toBeVisible(SYNC);
+      await expect(viewer.page.getByTestId('presence-status')).toHaveText('Live', SYNC);
+      await expect(viewer.page.getByTestId('role-pill')).toHaveCount(0);
+      await expect(viewer.page.getByTestId('cue-input')).toBeEnabled();
+      const copy = await readProject(viewer.page);
+      expect(copy.id).not.toBe(projectId);
+      expect(copy.scenes[0].objects.some((o) => o.id === 'revenue')).toBe(true);
+    } finally {
+      await viewer.context.close();
+    }
   });
 
   test('follow presenter mirrors the presenter\'s whiteboard camera', async () => {

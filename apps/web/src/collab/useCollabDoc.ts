@@ -3,6 +3,7 @@ import * as Y from 'yjs';
 import { Awareness } from 'y-protocols/awareness';
 import { IndexeddbPersistence } from 'y-indexeddb';
 import {
+  CLOSE_WRITE_REFUSED,
   LocalOrigin,
   PROJECT_ROOT,
   ProjectSchema,
@@ -16,12 +17,14 @@ import {
   repairProject,
   toPlain,
   type ClientMessage,
+  type CollabRole,
   type DiffSkip,
   type PlainCache,
   type Project,
   type ProjectChange,
 } from '@vizli/shared';
 import { getIdentity, type Identity } from './identity';
+import { ensureEditToken, getEditToken } from './access';
 import { CHANNEL_AUDIO, SessionTransport } from './transport';
 import { YSocketProvider } from './provider';
 
@@ -76,7 +79,7 @@ const rosterKey = (p: Peer) => JSON.stringify([p.awarenessId, p.clientId, p.user
 export type CollabStatus = 'loading' | 'cached' | 'connecting' | 'live' | 'offline';
 export type CommitSource = 'user' | 'ai' | 'sequence';
 export type CommitOptions = { base?: Project; source?: CommitSource; sequenceId?: string };
-export type CommitResult = { ok: boolean; skipped: DiffSkip[]; error?: string };
+export type CommitResult = { ok: boolean; skipped: DiffSkip[]; error?: string; code?: 'read-only' };
 type Snapshot = {
   project: Project | null;
   issues: string[];
@@ -88,6 +91,8 @@ type Snapshot = {
   joinEpoch: number;
   /** The socket has joined the project room; session messages are accepted. */
   joined: boolean;
+  /** Server-assigned role from `joined`; null until then. Viewers follow the project live but cannot change it. */
+  role: CollabRole | null;
   storageFull: boolean;
   peers: RosterPeer[];
 };
@@ -150,6 +155,11 @@ class CollabEntry {
   private presence: Partial<PresenceState> = {};
   private joinEpoch = 0;
   private inSequence = false;
+  private role: CollabRole | null = null;
+  /** Local edits made while not joined; a viewer's are discarded on join because the server would refuse them. */
+  private offlineEdits = false;
+  /** The server refused a write and closed the socket: discard the local replica at the next join. */
+  private resetOnJoin = false;
   private seedTimer: ReturnType<typeof setTimeout> | undefined;
   private readonly disposers: (() => void)[] = [];
   viewSceneId: string | undefined;
@@ -161,7 +171,7 @@ class CollabEntry {
     this.createDoc();
     this.provider = new YSocketProvider(this.doc, this.awareness, this.transport, {
       join: () => this.joinMessage(),
-      onJoined: (docId) => this.handleJoined(docId),
+      onJoined: (docId, role) => this.handleJoined(docId, role),
       onSynced: () => this.emit(),
       onReady: () => this.emit(),
       onJoinError: () => {
@@ -173,9 +183,10 @@ class CollabEntry {
         this.socketOpen = true;
         this.emit();
       }),
-      this.transport.onClose(() => {
+      this.transport.onClose((event) => {
         this.socketOpen = false;
         this.everClosed = true;
+        if (event.code === CLOSE_WRITE_REFUSED) this.resetOnJoin = true;
         this.emit();
       }),
     );
@@ -248,6 +259,7 @@ class CollabEntry {
     this.undoManager.on('stack-item-popped', counts);
     this.undoManager.on('stack-cleared', counts);
     this.unobserve = observeProject(doc, (change) => {
+      if (change.local && !this.provider?.joined) this.offlineEdits = true;
       this.recompute();
       // Undo/redo transactions carry the UndoManager as origin; they are this replica's own edits.
       if (!change.local && !(change.origin instanceof Y.UndoManager) && change.origin !== 'seed-local') for (const listener of [...this.remote]) listener(change);
@@ -292,8 +304,9 @@ class CollabEntry {
     return { doc: this.doc, awareness: this.awareness };
   }
 
-  private async handleJoined(docId: string) {
+  private async handleJoined(docId: string, role: CollabRole) {
     clearTimeout(this.seedTimer);
+    this.role = role;
     // Decide only after the IndexedDB copy has loaded, otherwise an unloaded cache looks empty.
     await Promise.race([this.idbReady, new Promise((resolve) => setTimeout(resolve, IDB_WAIT_MS))]);
     let cached: string | null = null;
@@ -303,7 +316,12 @@ class CollabEntry {
       /* ignore */
     }
     const local = cached ?? metaDocId(this.doc);
-    const replace = hasScenes(this.doc) && local !== docId;
+    // Replace the cached replica when it belongs to another document, when the server refused a write from it,
+    // or when a viewer edited while disconnected (the server would refuse those edits as well).
+    const replace =
+      hasScenes(this.doc) && (local !== docId || this.resetOnJoin || (role === 'viewer' && this.offlineEdits));
+    this.resetOnJoin = false;
+    this.offlineEdits = false;
     try {
       localStorage.setItem(docIdKey(this.projectId), docId);
     } catch {
@@ -323,6 +341,8 @@ class CollabEntry {
       const legacy = readLegacyProject();
       if (legacy?.id === this.projectId) seed = legacy;
     }
+    // Carrying a seed creates the project, so this replica mints and keeps its edit token; otherwise send the stored one.
+    const token = seed ? ensureEditToken(this.projectId) : getEditToken(this.projectId);
     return {
       type: 'join',
       projectId: this.projectId,
@@ -332,6 +352,7 @@ class CollabEntry {
       color: identity.color,
       ...(this.viewSceneId ? { sceneId: this.viewSceneId } : {}),
       ...(seed ? { seed: { ...seed, id: this.projectId } } : {}),
+      ...(token ? { token } : {}),
     };
   }
 
@@ -409,6 +430,7 @@ class CollabEntry {
       docId: this.provider?.docId,
       joinEpoch: this.joinEpoch,
       joined: this.provider?.joined ?? false,
+      role: this.role,
       storageFull: this.storageFull,
       peers: this.roster,
     };
@@ -426,6 +448,7 @@ class CollabEntry {
       prev.docId === next.docId &&
       prev.joinEpoch === next.joinEpoch &&
       prev.joined === next.joined &&
+      prev.role === next.role &&
       prev.storageFull === next.storageFull &&
       prev.peers === next.peers
     )
@@ -443,6 +466,8 @@ class CollabEntry {
   commit = (next: Project, options: CommitOptions = {}): CommitResult => {
     const latest = this.latest;
     if (!latest) return { ok: false, skipped: [], error: 'the project is still opening' };
+    // The server refuses every write from a viewer; refusing here keeps the local replica in step with the room.
+    if (this.role === 'viewer') return { ok: false, skipped: [], error: 'this link is view only', code: 'read-only' };
     const source = options.source ?? 'user';
     const candidate = source === 'sequence' ? next : { ...next, scenes: next.scenes.map(invalidateDerivedResults) };
     const parsed = ProjectSchema.safeParse(candidate);

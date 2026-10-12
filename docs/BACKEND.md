@@ -5,12 +5,12 @@ Updated: 11 October 2026 (chronological sections below; first authored 8 October
 ## What exists
 
 - `packages/shared/src/index.ts`: strict Zod schemas and inferred TypeScript contracts; three editable demo scenes; stable nested matrix row/cell/column and chart bar targets.
-- `apps/server/src/app.ts`: Fastify HTTP/WS application factory, request origin restrictions, project API, static production frontend serving. Local binding is the default; there is no authentication.
+- `apps/server/src/app.ts`: Fastify HTTP/WS application factory, request origin restrictions, security headers and CSP, project API, static production frontend serving. Local binding is the default. There are no accounts: project ids are read capabilities and edit tokens are write capabilities (`docs/SECURITY.md`, 12 October 2026), with per-client limits and an admin delete route.
 - `session.ts`: XState session and cue actors, cancellation, revision gates, bounded latest-partial transcript processing, duplicate suppression, renderer acknowledgements, bounded actor history.
 - `resolver.ts`: deterministic explicitly labeled demo resolver and actual Nebius chat-completions adapter. Live mode requires BOTH `NEBIUS_API_KEY` and `NEBIUS_MODEL`, avoiding an assumed model catalog entry. Failed inference reports an error; it does not silently masquerade demo output as live inference.
 - `speech.ts`: NVIDIA hosted Nemotron ASR via Riva bidirectional gRPC with TLS, PCM16 mono 16kHz audio, bounded startup/upload buffering, and portion-final/partial transcript handling. This replaces Deepgram. Keys stay server-side.
-- `store.ts`: traversal-resistant, atomically replaced per-project files: `<id>.yjs` (authoritative Yjs document state) and `<id>.json` (derived, schema-valid plain copy). Invalid existing files are preserved and reported, not silently overwritten.
-- `collab/rooms.ts`, `collab/limits.ts`: one Yjs `DocRoom` per project (sync/awareness relay, debounced persistence, idle eviction) and the `RoomRegistry`; per-process collaboration limits. See "Collaborative rooms" below.
+- `store.ts`: traversal-resistant, atomically replaced per-project files: `<id>.yjs` (authoritative Yjs document state), `<id>.json` (derived, schema-valid plain copy) and `<id>.access.json` (SHA-256 of the edit token). Invalid existing files are preserved and reported, not silently overwritten; `deleteProject` removes all three.
+- `collab/rooms.ts`, `collab/limits.ts`, `collab/access.ts`: one Yjs `DocRoom` per project (sync/awareness relay, role enforcement, document size cap, debounced persistence, idle eviction), the `RoomRegistry` (roles, creation with hashed edit tokens, authorisation for HTTP, deletion), per-process and per-client limits, and token minting/hashing. See "Collaborative rooms" below and `docs/SECURITY.md`.
 
 ## Run and configure
 
@@ -257,3 +257,25 @@ Configuration lives in `readProviderConfig`: `NEBIUS_FAST_MODEL`, `NEBIUS_MODEL`
 Every action and skip now carries `served` (`packages/shared`, `ServedBySchema`): the provider (`nebius-token-factory` or `local-rules`), the model and tier when a model produced the action, the deterministic `planner` when a rule did, the preceding router decision, and latencies. The browser appends this to the activity log so a presenter or judge can see, per cue, that Nemotron Nano routed it and which model or tool completed it. Demo mode records no model.
 
 All tier calls share `apps/server/src/nebius.ts` (`completeJson`): one request shape, strict `json_schema` output, `chat_template_kwargs.enable_thinking` control for Nemotron, per-call timeouts and the existing usage guard. `pnpm bench:nebius` makes real, billable calls through the router, the core resolver and the lesson author and prints p50/p95 per tier; results and dates are recorded in `docs/STATUS.md`.
+
+## Access control, per-client limits and hardening — 12 October 2026
+
+Implemented after the security review of the same day; the full description, limits table, threat model and
+deployment checklist are in `docs/SECURITY.md`. Summary of the backend changes:
+
+- `collab/access.ts`: edit tokens (24 random bytes, base64url) minted by `POST /api/projects` or by the client
+  for seeded joins; only the SHA-256 is stored (`<id>.access.json`); constant-time comparison; `roleFor`
+  (demo always viewer, missing record means legacy open project); `secretMatches` for `ADMIN_TOKEN`.
+- `collab/rooms.ts`: members carry a role; `handleSync` answers step 1 for everyone, accepts only empty step 2
+  replies from viewers and refuses other viewer writes (`read-only`); `admitWrite` refuses writes past
+  `COLLAB_MAX_DOC_BYTES` (`document-full`) with a 1 KiB / 25% cleanup tolerance; awareness frames are size
+  capped; `RoomRegistry.authorize`, `createProject` (returns the token once), per-client creation window,
+  `deleteProject` (notifies and closes sockets, discards without a final write, deletes files).
+- `app.ts`: security headers and a same-origin CSP on every response, HSTS behind a trusted proxy
+  (`TRUST_PROXY`), request-log redaction of project ids, per-client `UsageGate` (`usage.forClient(ip)`) for
+  model calls and voice, `ConnectionTable` socket cap, join timeout, refused writes close the socket with
+  4004, viewers' cues and `listen` refused, `PUT` requires the edit token, `DELETE` requires the admin token.
+- `usage.ts`: `UsageGate` interface, per-client hourly/concurrency ceilings in front of the shared ones.
+- `generate.ts`, `nebius.ts`, `resolver.ts`, `lessons.ts`, `intent.ts` take a `UsageGate` instead of the
+  concrete guard; behaviour is unchanged.
+- Dependencies: `@fastify/static` 10.1.6 and `katex` 0.19.0 (audit clean).

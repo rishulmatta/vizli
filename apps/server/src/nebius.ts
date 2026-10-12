@@ -1,4 +1,4 @@
-import type { UsageGuard } from "./usage.js";
+import type { UsageGate } from "./usage.js";
 /**
  * Minimal Nebius Token Factory chat-completions client for strict JSON output.
  * Every tier in Vizli (fast router, core interpreter, reasoning lesson author,
@@ -7,7 +7,7 @@ import type { UsageGuard } from "./usage.js";
 export type NebiusClientConfig = {
   key: string;
   baseUrl: string;
-  usage?: UsageGuard;
+  usage?: UsageGate;
 };
 export type JsonCompletionRequest = {
   model: string;

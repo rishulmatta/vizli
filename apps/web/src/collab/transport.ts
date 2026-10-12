@@ -1,7 +1,7 @@
 import { createActor } from 'xstate';
 import * as encoding from 'lib0/encoding';
 import * as decoding from 'lib0/decoding';
-import type { ClientMessage, ServerMessage } from '@vizli/shared';
+import { CLOSE_PROJECT_DELETED, CLOSE_TOO_MANY_CONNECTIONS, type ClientMessage, type ServerMessage } from '@vizli/shared';
 import { connectionMachine } from '../lib/machines';
 
 /** Binary frame channels on `/api/session`: one varuint channel prefix, then the payload. */
@@ -12,6 +12,7 @@ export const CHANNEL_AUDIO = 2;
 export const AUDIO_BACKPRESSURE_BYTES = 128_000;
 
 type Listener<T> = (value: T) => void;
+export type CloseInfo = { code: number; reason: string };
 
 /**
  * Owns the `/api/session` WebSocket: exponential reconnect backoff (1 s doubling to 10 s),
@@ -27,7 +28,7 @@ export class SessionTransport {
   private readonly json = new Set<Listener<ServerMessage>>();
   private readonly binary = new Map<number, Set<Listener<Uint8Array>>>();
   private readonly opens = new Set<() => void>();
-  private readonly closes = new Set<() => void>();
+  private readonly closes = new Set<Listener<CloseInfo>>();
 
   constructor(private readonly url = SessionTransport.defaultUrl()) {
     this.connect();
@@ -77,13 +78,16 @@ export class SessionTransport {
       }
       for (const listener of [...(this.binary.get(channel) ?? [])]) listener(body);
     };
-    ws.onclose = () => {
+    ws.onclose = (event) => {
       if (this.socket !== ws) return;
       this.socket = null;
       if (this.disposed) return;
       this.connection.send({ type: 'LOST' });
-      for (const listener of [...this.closes]) listener();
-      this.timer = setTimeout(() => this.connect(), Math.min(1000 * 2 ** this.retries++, 10_000));
+      for (const listener of [...this.closes]) listener({ code: event.code, reason: event.reason });
+      // Application close codes (docs/SECURITY.md): a deleted project stays closed; a connection cap backs off longer.
+      if (event.code === CLOSE_PROJECT_DELETED) return;
+      const delay = event.code === CLOSE_TOO_MANY_CONNECTIONS ? 30_000 : Math.min(1000 * 2 ** this.retries++, 10_000);
+      this.timer = setTimeout(() => this.connect(), delay);
     };
     ws.onerror = () => ws.close();
   }
@@ -120,7 +124,7 @@ export class SessionTransport {
     this.opens.add(listener);
     return () => void this.opens.delete(listener);
   }
-  onClose(listener: () => void) {
+  onClose(listener: Listener<CloseInfo>) {
     this.closes.add(listener);
     return () => void this.closes.delete(listener);
   }

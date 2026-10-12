@@ -1,5 +1,5 @@
 import { planDomainPresentation } from "./domains/index.js";
-import type { UsageGuard } from "./usage.js";
+import type { UsageGate } from "./usage.js";
 import { z } from "zod";
 import {
   BoardNavigationSchema,
@@ -1142,7 +1142,7 @@ export function createNebiusResolver(config: {
   key: string;
   model: string;
   baseUrl: string;
-  usage?: UsageGuard;
+  usage?: UsageGate;
   /** Fast-tier Nemotron router; omitted keeps the deterministic-first order for single-model setups and tests. */
   router?: IntentRouter;
 }): Resolver {

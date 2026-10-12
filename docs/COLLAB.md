@@ -18,7 +18,7 @@ Shared helpers: `fromPlain` seeds an empty document; `toPlain` derives a snapsho
 
 ## Wire protocol (one socket, `/api/session`)
 
-Text frames are the existing JSON messages. The old `scene` snapshot message is gone; the strict union rejects it. Added: `join {projectId, userId, clientId, name, color, sceneId?, seed?, token?}` and `view {sceneId}`. Server additions: `joined {projectId, docId, version}`, `effect {action, clientId, name}` (a peer's transient attention), `error {message, code?}`.
+Text frames are the existing JSON messages. The old `scene` snapshot message is gone; the strict union rejects it. Added: `join {projectId, userId, clientId, name, color, sceneId?, seed?, token?}` (`token` is the project's edit token, see `docs/SECURITY.md`) and `view {sceneId}`. Server additions: `joined {projectId, docId, version, role}` (`role` is `editor` or `viewer`), `effect {action, clientId, name}` (a peer's transient attention), `error {message, code?}`.
 
 Binary frames carry a varuint channel prefix:
 
@@ -30,17 +30,19 @@ Binary frames carry a varuint channel prefix:
 
 Join flow: `ready` → `join` → `joined` → the server sends sync step 1 and the current awareness states → the client sends its step 1 → both sides exchange step 2 → updates flow as they happen. Messages other than `join` before a successful join are answered with `error{code:'not-joined'}`; binary frames before join are dropped.
 
-Error codes: `not-joined`, `already-joined`, `project-not-found`, `project-unreadable`, `invalid-seed`, `project-limit`, `rooms-full`, `room-full`, `bad-frame`.
+Roles (12 October 2026): a viewer's sync step 2 reply is accepted only when it is empty; any other write from a viewer is refused with `error{code:'read-only'}`, never applied, and the socket is closed with 4004 (`CLOSE_WRITE_REFUSED`) so the replica reloads the server state. Writes past the document size cap are refused the same way with `document-full`. Viewers' cues and `listen` are refused with `read-only` but keep the socket.
+
+Error codes: `not-joined`, `already-joined`, `project-not-found`, `project-unreadable`, `invalid-seed`, `project-limit`, `rooms-full`, `room-full`, `bad-frame`, `read-only`, `document-full`, `project-deleted`. Close codes: 1007 unreadable frames, 1008 sync rate, 1009 oversized sync, 1013 slow client, 4001 too many sockets from one address (client retries after 30 s), 4002 join timeout, 4003 project deleted (client stays closed), 4004 write refused (client discards its replica and rejoins).
 
 ## Rooms (`apps/server/src/collab/rooms.ts`)
 
-`RoomRegistry.join` dedupes concurrent loads and waits for an in-progress eviction. Load order: `<id>.yjs` (authoritative) → `<id>.json` migrated through `fromPlain` and persisted as `.yjs` within a second → `join.seed` when it is schema-valid and carries the same id (bounded by the hourly creation cap) → the demo project for `default` → `project-not-found`. A `docId` is stored in `meta` at creation and returned in `joined` so a client can discard a cached replica from a different history (the Nebius container wipes `.data` on restart).
+`RoomRegistry.join` dedupes concurrent loads and waits for an in-progress eviction. Load order: `<id>.yjs` (authoritative) → `<id>.json` migrated through `fromPlain` and persisted as `.yjs` within a second → `join.seed` when it is schema-valid, carries the same id and the join carries the edit token the client minted for it (bounded by the shared and per-client hourly creation caps; the token's hash is stored as `<id>.access.json`) → the demo project for `default` → `project-not-found`. A `docId` is stored in `meta` at creation and returned in `joined` so a client can discard a cached replica from a different history (the Nebius container wipes `.data` on restart).
 
 `DocRoom` relays every applied update to all sockets except its author, rebroadcasts awareness changes, records which awareness client ids each socket introduced and removes them when it leaves, and keeps a lazily repaired plain `project` for the voice sessions and HTTP. Members are told `self` or `peer` about 50 ms after a change so the session can keep interpreting through a peer's edit while a self edit resets it as before. Slow clients are closed with 1013 when their socket buffer exceeds the limit instead of queueing. Rooms evict after `COLLAB_ROOM_IDLE_MS` without sockets, after a final flush; `preClose` flushes every room.
 
 Persistence: writes are debounced (`COLLAB_SAVE_DEBOUNCE_MS`) with a max wait (`COLLAB_SAVE_MAX_WAIT_MS`), serialized per room; `<id>.yjs` is the full encoded state (tombstones are the only growth), then `<id>.json` is derived through repair and the schema for `GET /api/projects/:id`, export and backups. A plain file newer than the document is ignored with a warning; use `PUT /api/projects/:id` to import it, which applies a diff into the live room or the stored document rather than replacing history.
 
-HTTP: `GET /api/projects/:id` (live room, stored document, or plain file; 404 except `default`), `POST /api/projects` creates a project with a server-generated id, `PUT /api/projects/:id` imports.
+HTTP: `GET /api/projects/:id` (live room, stored document, or plain file; 404 except `default`), `POST /api/projects` creates a project with a server-generated id and returns its edit token exactly once, `PUT /api/projects/:id` imports into an existing project and requires the edit token as a bearer token (never creates), `DELETE /api/projects/:id` requires `ADMIN_TOKEN` and closes the room first.
 
 ## Limits (`apps/server/src/collab/limits.ts`, env)
 
@@ -54,6 +56,11 @@ HTTP: `GET /api/projects/:id` (live room, stored document, or plain file; 404 ex
 | `COLLAB_SYNC_BYTES_PER_SECOND` / `COLLAB_SYNC_MAX_MESSAGE_BYTES` | 2 MB / 10 MB | over the rate closes 1008, over the size closes 1009 (never a silent drop) |
 | `COLLAB_AWARENESS_PER_SECOND` | 30 | excess awareness frames are dropped |
 | `COLLAB_MAX_BUFFERED_BYTES` | 16 MB | slow-client disconnect threshold |
+| `COLLAB_MAX_DOC_BYTES` | 32 MiB | writes past the encoded document size are refused (`document-full`, close 4004); updates of at most 1 KiB are still accepted up to 25% over |
+| `COLLAB_AWARENESS_MAX_BYTES` | 16 KiB | larger awareness frames count as unreadable |
+| `MAX_SOCKETS_PER_CLIENT` | 16 | further sockets from one address are closed with 4001 |
+| `SOCKET_JOIN_TIMEOUT_MS` | 15000 | sockets that never join are closed with 4002 |
+| `MAX_PROJECTS_CREATED_PER_HOUR_PER_CLIENT` | 20 | seeds and `POST` per address, in front of the shared cap |
 
 Voice budgets, LLM limits and cue bursts stay per socket and unchanged.
 
@@ -63,14 +70,14 @@ Voice budgets, LLM limits and cue bursts stay per socket and unchanged.
 
 ## Client (`apps/web/src/collab/`)
 
-`transport.ts` owns the socket and reconnect; `provider.ts` speaks the sync and awareness protocols over it; `useCollabDoc` exposes the repaired plain project through `useSyncExternalStore`, `commit(next, {base})`, a `Y.UndoManager` tracking only this replica's `LocalOrigin` transactions (one step per gesture, keystrokes within 800 ms merge, one step per narrated sequence), and the connection status. `y-indexeddb` caches the replica so a project renders immediately and offline edits reconcile on reconnect. Identity: `vizli.identity.v1` (user id, name, color) plus a per-tab client id. Projects are addressed as `/p/<id>`; `/` redirects to the cached project or creates a new one; `/p/default` is the shared demo.
+`transport.ts` owns the socket and reconnect; `provider.ts` speaks the sync and awareness protocols over it; `useCollabDoc` exposes the repaired plain project through `useSyncExternalStore`, `commit(next, {base})`, a `Y.UndoManager` tracking only this replica's `LocalOrigin` transactions (one step per gesture, keystrokes within 800 ms merge, one step per narrated sequence), and the connection status. `y-indexeddb` caches the replica so a project renders immediately and offline edits reconcile on reconnect. Identity: `vizli.identity.v1` (user id, name, color) plus a per-tab client id. Edit tokens (`collab/access.ts`): `vizli.edit.v1` per project, sent as `join.token`, shared as `/p/<id>#edit=<token>` (the fragment is stored and removed from the address bar); `useCollabDoc` exposes `role`, refuses commits for viewers, discards a viewer's offline edits on join and discards the replica after a 4004 close. Projects are addressed as `/p/<id>`; `/` redirects to the cached project or creates a new one whose token stays in that browser; `/p/default` is the shared read-only demo, and viewers can "Make a copy" (`PresenceBar`).
 
 ## Known limits
 
 - Two people editing the same text field at once: the later edit wins whole.
 - Array order is not merged; moving an item is delete plus insert, and undoing a move recreates it.
 - Over-cap objects or strokes stay in the document but are hidden by repair until deletions expose them.
-- Anyone with a project link can edit it; there is no authentication (`join.token` and the identity hooks are the seam for it).
+- A project link is a read capability and the edit token a write capability (`docs/SECURITY.md`); there are still no accounts, so an edit link, once shared, can only be revoked by recreating the project.
 - A single server process holds every room in memory; embedded data-URL images make rooms large.
 
 ## Verification

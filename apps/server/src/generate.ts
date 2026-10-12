@@ -1,5 +1,5 @@
 import { readProviderConfig } from "./config.js";
-import type { UsageGuard } from "./usage.js";
+import type { UsageGate } from "./usage.js";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { SceneSchema, createDemoProject, type Scene, type ServedBy } from "@vizli/shared";
@@ -66,7 +66,7 @@ export function templateScene(kind: GenerateRequest["kind"]): Scene {
 export async function generateScene(
   request: GenerateRequest,
   env: NodeJS.ProcessEnv,
-  usage?: UsageGuard,
+  usage?: UsageGate,
   signal?:AbortSignal,
 ): Promise<GeneratedScene> {
   signal?.throwIfAborted();

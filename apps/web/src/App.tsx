@@ -54,6 +54,8 @@ import {
   appendIllustration,
   getSceneViewport,
   hasTarget,
+  isAllowedImageSource,
+  blockedImageHost,
   type Project,
   type Scene,
   type SceneObject,
@@ -67,6 +69,7 @@ import {useCollabDoc,type CollabStatus,type CommitSource} from "./collab/useColl
 import WhiteboardControls from "./editor/WhiteboardControls";
 import PresenceBar from "./editor/PresenceBar";
 import {saveIdentity} from "./collab/identity";
+import {forkProject} from "./collab/access";
 import {useCursorPublisher} from "./collab/useCursorPublisher";
 import {usePresentationPlayback} from "./playback/usePresentationPlayback";
 import PlaybackControls from "./playback/PlaybackControls";
@@ -117,6 +120,23 @@ const SAVE_TEXT: Record<CollabStatus, string> = {
   offline: "Offline — changes sync when you reconnect",
 };
 type Collab = ReturnType<typeof useCollabDoc>;
+const READ_ONLY_NOTICE = "This link is view only. Make an editable copy to change or narrate it.";
+/** Remembered per browser once the person has read where microphone audio goes. */
+const MIC_CONSENT_KEY = "vizli.micConsent.v1";
+const micConsented = () => {
+  try {
+    return localStorage.getItem(MIC_CONSENT_KEY) === "1";
+  } catch {
+    return false;
+  }
+};
+const rememberMicConsent = () => {
+  try {
+    localStorage.setItem(MIC_CONSENT_KEY, "1");
+  } catch {
+    /* the dialog simply shows again next time */
+  }
+};
 type CommitOptions = { base?: Project; source?: CommitSource; sequenceId?: string; keepPlayback?: boolean };
 
 /** Opens the shared project for `/p/<projectId>`; the workspace renders once a document snapshot exists. */
@@ -135,6 +155,8 @@ export default function App({ projectId }: { projectId: string }) {
 
 function Workspace({ collab, project }: { collab: Collab; project: Project }) {
   const [currentSceneId, setCurrentSceneId] = useState(() => project.scenes[0].id);
+  // Viewers (no edit token for this project) follow live but cannot change, cue or narrate; the server enforces the same.
+  const canEdit = collab.role !== "viewer";
   const foundSceneIndex = project.scenes.findIndex((s) => s.id === currentSceneId);
   const sceneIndex = foundSceneIndex < 0 ? 0 : foundSceneIndex;
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -158,7 +180,7 @@ function Workspace({ collab, project }: { collab: Collab; project: Project }) {
   const [notice, setNotice] = useState("");
   const saved = collab.storageFull ? "Storage full — export your project" : SAVE_TEXT[collab.status];
   const [dialog, setDialog] = useState<
-    "providers" | "image" | "tour" | "scene" | null
+    "providers" | "image" | "tour" | "scene" | "mic-consent" | null
   >(null);
   const [imageUrl, setImageUrl] = useState("");
   const [sceneTitle, setSceneTitle] = useState(""),
@@ -172,6 +194,7 @@ function Workspace({ collab, project }: { collab: Collab; project: Project }) {
   const [addOpen, setAddOpen] = useState(false);
   const [canvasTool,setCanvasTool]=useState<"select"|"pan">("select");
   const [inkTool,setInkTool]=useState<InkTool|null>(null);
+  useEffect(()=>{if(!canEdit){setInkTool(null);setAddOpen(false);}},[canEdit]);
   const [penStyle,setPenStyle]=useState<{color:InkColorId;width:InkWidthId}>({color:'red',width:'medium'});
   const [scenesOpen,setScenesOpen]=useState(false),[filesOpen,setFilesOpen]=useState(false),[activityOpen,setActivityOpen]=useState(false);
   const cancelPlaybackRef=useRef<()=>void>(()=>{});
@@ -221,7 +244,7 @@ function Workspace({ collab, project }: { collab: Collab; project: Project }) {
     if (!keepPlayback && rest.source !== "sequence") cancelPlaybackRef.current();
     const result = collabCommit(next, rest);
     if (!result.ok) {
-      setNotice(`Change not applied: ${result.error ?? "it would make the project invalid"}.`);
+      setNotice(result.code === "read-only" ? READ_ONLY_NOTICE : `Change not applied: ${result.error ?? "it would make the project invalid"}.`);
       return false;
     }
     if (result.skipped.length) setNotice("That object was removed by a collaborator.");
@@ -638,6 +661,15 @@ function Workspace({ collab, project }: { collab: Collab; project: Project }) {
       setDialog("providers");
       return;
     }
+    if (!canEdit) {
+      setNotice(READ_ONLY_NOTICE);
+      return;
+    }
+    // First use in this browser: say where the audio goes before any of it leaves the device.
+    if (!micConsented()) {
+      setDialog("mic-consent");
+      return;
+    }
     if (!connection.matches("ready") || !collab.joined) {
       setNotice(
         "Wait for the session to reconnect before starting your microphone.",
@@ -750,6 +782,16 @@ function Workspace({ collab, project }: { collab: Collab; project: Project }) {
     const next:Scene={id:uid(),title:"Untitled whiteboard",subtitle:"ROOM TO THINK",kind:"slide",layout:"whiteboard",objects:[],connections:[],viewport:{x:0,y:0,zoom:1},areas:[{id:areaId,label:"Start",x:0,y:0,width:1200,height:675}],activeAreaId:areaId};
     if(commit({...project,scenes:[...project.scenes,next]},{base:project}))changeScene(next.id);sendMode({type:"EDIT"});
   }
+  /** Viewers get their own editable project: the current snapshot under a new id, with its edit token kept in this browser. */
+  async function forkCurrent() {
+    setNotice("Creating your editable copy…");
+    const created = await forkProject(projectRef.current);
+    if (!created) {
+      setNotice("Could not create a copy on the server. Try again in a moment.");
+      return;
+    }
+    location.assign(`/p/${created.id}`);
+  }
   function exportProject() {
     const url = URL.createObjectURL(
       new Blob([JSON.stringify(project, null, 2)], {
@@ -859,7 +901,7 @@ function Workspace({ collab, project }: { collab: Collab; project: Project }) {
       scene={scene}
       selectedId={selectedId}
       effect={effect}
-      editable={mode.matches("editing")}
+      editable={mode.matches("editing") && canEdit}
       selectable={!isPresenting}
       onSelect={setSelectedId}
       onChange={updateScene}
@@ -884,11 +926,11 @@ function Workspace({ collab, project }: { collab: Collab; project: Project }) {
           <div className="floating-project">
             <a className="tiny-brand" href="#" onClick={e=>e.preventDefault()} aria-label="Vizli home">vizli<span>✳</span></a>
             <span className="floating-separator"/>
-            <div className="floating-title"><input aria-label="Project title" title={saved} value={project.title} onChange={e=>commit({...project,title:e.target.value},{base:project})}/><span>{scene.title}</span></div>
+            <div className="floating-title"><input aria-label="Project title" title={saved} value={project.title} readOnly={!canEdit} onChange={e=>commit({...project,title:e.target.value},{base:project})}/><span>{scene.title}</span></div>
             <button className={`icon-button ${scenesOpen?'active':''}`} aria-label="Open scenes" title="Scenes" aria-expanded={scenesOpen} data-testid="scenes-toggle" onClick={()=>{setScenesOpen(!scenesOpen);setFilesOpen(false);}}><Layers3 size={17}/></button>
           </div>
           <div className="floating-actions">
-            <PresenceBar status={collab.status} peers={roster} me={me} projectId={project.id} followingId={followingId}
+            <PresenceBar status={collab.status} peers={roster} me={me} projectId={project.id} role={collab.role} followingId={followingId} onFork={()=>void forkCurrent()}
               onRename={(name)=>{const next=saveIdentity({name});setMe({name:next.name,color:next.color});setPresence({name:next.name});}}
               onFollow={setFollowingId}/>
             <div className="mode-switch" aria-label="Presentation mode">
@@ -931,7 +973,7 @@ function Workspace({ collab, project }: { collab: Collab; project: Project }) {
               }}
               onNotice={setNotice}
             />
-            {!isPresenting && (
+            {!isPresenting && canEdit && (
               <CreateScene
                 key={scene.id}
                 whiteboard={scene.layout === "whiteboard"}
@@ -959,15 +1001,17 @@ function Workspace({ collab, project }: { collab: Collab; project: Project }) {
                 : "Demo workspace"}
               <ChevronDown size={12} />
             </button>
-            <button
-              className="icon-button"
-              title="Import project"
-              data-testid="project-import"
-              aria-label="Import project"
-              onClick={() => importRef.current?.click()}
-            >
-              <FileUp size={18} />
-            </button>
+            {canEdit && (
+              <button
+                className="icon-button"
+                title="Import project"
+                data-testid="project-import"
+                aria-label="Import project"
+                onClick={() => importRef.current?.click()}
+              >
+                <FileUp size={18} />
+              </button>
+            )}
             <button
               data-testid="project-export"
               className="button export-button"
@@ -1036,10 +1080,12 @@ function Workspace({ collab, project }: { collab: Collab; project: Project }) {
                     </button>
                   ))}
                 </div>
+                {canEdit && (<>
                 <button className="add-scene new-whiteboard" data-testid="new-whiteboard" onClick={addWhiteboard}><Grid2X2 size={16}/> New whiteboard</button>
                 <button className="add-scene" onClick={addScene}>
                   <Plus size={16} /> Add scene
                 </button>
+                </>)}
               </nav>
             )}
             <section className="stage-column" aria-label="Scene workspace">
@@ -1049,7 +1095,7 @@ function Workspace({ collab, project }: { collab: Collab; project: Project }) {
                   <button data-testid="surface-whiteboard" aria-pressed={scene.layout==="whiteboard"} onClick={()=>switchSurface('whiteboard')}>Whiteboard</button>
                 </div>
                 {scene.layout==='whiteboard'&&<div className="canvas-tool-switch" role="group" aria-label="Canvas interaction tool"><button className="icon-button" data-testid="tool-select" aria-label="Select tool" title="Select and move objects" aria-pressed={canvasTool==='select'} onClick={()=>setCanvasTool('select')}><MousePointer2 size={14}/></button><button className="icon-button" data-testid="tool-hand" aria-label="Hand tool" title="Drag anywhere to pan the canvas" aria-pressed={canvasTool==='pan'} onClick={()=>{setCanvasTool('pan');setSelectedId(null);setInkTool(null);}}><Hand size={15}/></button></div>}
-                <div className="ink-tools" role="group" aria-label="Pen annotations">
+                {canEdit && <div className="ink-tools" role="group" aria-label="Pen annotations">
                   <button className="icon-button" data-testid="ink-tool-pen" aria-label="Pen" title="Draw on the canvas" aria-pressed={inkTool?.mode==='pen'} onClick={()=>{if(inkTool?.mode==='pen'){setInkTool(null);return;}setInkTool({mode:'pen',...penStyle});setSelectedId(null);setCanvasTool('select');}}><PenLine size={14}/></button>
                   {inkTool?.mode==='pen'&&<>
                     {INK_COLORS.map(c=><button key={c.id} className="ink-swatch-button" data-testid={`ink-color-${c.id}`} aria-label={c.label} title={c.label} aria-pressed={inkTool.color===c.id} onClick={()=>{setPenStyle(p=>({...p,color:c.id}));setInkTool({...inkTool,color:c.id});}}><span className="ink-swatch" style={{background:c.value,opacity:c.opacity}}/></button>)}
@@ -1057,9 +1103,9 @@ function Workspace({ collab, project }: { collab: Collab; project: Project }) {
                   </>}
                   <button className="icon-button" data-testid="ink-tool-eraser" aria-label="Eraser" title="Erase pen strokes" aria-pressed={inkTool?.mode==='eraser'} onClick={()=>{if(inkTool?.mode==='eraser'){setInkTool(null);return;}setInkTool({mode:'eraser'});setSelectedId(null);setCanvasTool('select');}}><Eraser size={14}/></button>
                   <button className="icon-button" data-testid="ink-clear" aria-label="Clear ink" title="Clear all pen strokes" disabled={!scene.ink?.length} onClick={()=>updateSceneInk(clearInk(scene),scene)}><Trash2 size={14}/></button>
-                </div>
+                </div>}
                 <div className="stage-tools">
-                  {!isPresenting && (
+                  {!isPresenting && canEdit && (
                     <button
                       className="icon-button"
                       data-testid="scene-settings"
@@ -1106,7 +1152,7 @@ function Workspace({ collab, project }: { collab: Collab; project: Project }) {
               <div className="stage-frame">{canvas}</div>
               {!isPresenting && (
                 <div className="canvas-controls">
-                  <div className="add-menu-wrap">
+                  {canEdit && <div className="add-menu-wrap">
                     <button
                       className="button add-button"
                       onClick={() => setAddOpen(!addOpen)}
@@ -1155,7 +1201,7 @@ function Workspace({ collab, project }: { collab: Collab; project: Project }) {
                         <PluginLibrary onAdd={addPlugin}/>
                       </div>
                     )}
-                  </div>
+                  </div>}
                   <div className="scene-nav">
                     <button
                       className="icon-button"
@@ -1301,6 +1347,11 @@ function Workspace({ collab, project }: { collab: Collab; project: Project }) {
                         }
                       />
                     </label>
+                  )}
+                  {selected.kind === "image" && blockedImageHost(selected.src) && (
+                    <small className="field-hint" data-testid="image-blocked-hint">
+                      Images from {blockedImageHost(selected.src)} are not displayed. Upload the file or use a Wikimedia Commons image URL.
+                    </small>
                   )}
                   {selected.kind === "image" &&
                     (selected.imageSource || selected.anchor) && (
@@ -1573,7 +1624,8 @@ function Workspace({ collab, project }: { collab: Collab; project: Project }) {
                 <textarea
                   data-testid="cue-input"
                   aria-label="Type a visual cue"
-                  placeholder={input.matches("listening") ? "Listening… or type an instruction" : "Speak, or tell your canvas what to do…"}
+                  disabled={!canEdit}
+                  placeholder={!canEdit ? "View-only link. Make a copy to use cues." : input.matches("listening") ? "Listening… or type an instruction" : "Speak, or tell your canvas what to do…"}
                   value={cue}
                   onChange={(e) => setCue(e.target.value)}
                   onKeyDown={(e) => {
@@ -1594,7 +1646,7 @@ function Workspace({ collab, project }: { collab: Collab; project: Project }) {
                     data-testid="cue-submit"
                     type="submit"
                     aria-label="Send cue"
-                    disabled={!cue.trim()}
+                    disabled={!cue.trim() || !canEdit}
                   >
                     <ArrowRight size={17} />
                   </button>
@@ -1784,6 +1836,35 @@ function Workspace({ collab, project }: { collab: Collab; project: Project }) {
                   Refresh connections
                 </button>
               </>
+            ) : dialog === "mic-consent" ? (
+              <>
+                <span className="modal-symbol">
+                  <Mic size={25} />
+                </span>
+                <h2 id="dialog-title">Before the microphone starts</h2>
+                <p>
+                  Your voice is streamed to NVIDIA’s hosted Nemotron speech
+                  service to be transcribed, and the transcript together with
+                  the labels on this canvas is sent to Nemotron on Nebius Token
+                  Factory to be interpreted. Vizli does not record or keep the
+                  audio. Collaborators see the resulting actions, not the audio.
+                </p>
+                <button
+                  className="button primary full"
+                  data-testid="mic-consent-accept"
+                  onClick={() => {
+                    rememberMicConsent();
+                    setDialog(null);
+                    void toggleMic();
+                  }}
+                >
+                  <Mic size={16} />
+                  Start microphone
+                </button>
+                <button className="button full" onClick={() => setDialog(null)}>
+                  Not now
+                </button>
+              </>
             ) : dialog === "image" ? (
               <>
                 <span className="modal-symbol">
@@ -1791,13 +1872,14 @@ function Workspace({ collab, project }: { collab: Collab; project: Project }) {
                 </span>
                 <h2 id="dialog-title">A picture belongs here.</h2>
                 <p>
-                  Add an image from your device, or use a direct HTTPS image
-                  URL.
+                  Add an image from your device, or paste a Wikimedia Commons
+                  image URL. Other hosts are not loaded, so viewers never
+                  reveal their address to third parties.
                 </p>
                 <label>
                   Image URL
                   <input
-                    placeholder="https://example.com/image.jpg"
+                    placeholder="https://upload.wikimedia.org/…"
                     value={imageUrl}
                     onChange={(e) => setImageUrl(e.target.value)}
                   />
@@ -1807,12 +1889,11 @@ function Workspace({ collab, project }: { collab: Collab; project: Project }) {
                   onClick={() => {
                     try {
                       const url = new URL(imageUrl);
-                      if (!["http:", "https:"].includes(url.protocol))
-                        throw new Error();
+                      if (!isAllowedImageSource(url.href)) throw new Error();
                       addObject("image", url.href);
                       setImageUrl("");
                     } catch {
-                      setNotice("Enter a valid HTTP or HTTPS image URL.");
+                      setNotice("Use an https://upload.wikimedia.org image URL, or upload the file from your device.");
                     }
                   }}
                 >

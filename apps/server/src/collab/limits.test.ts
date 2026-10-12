@@ -30,3 +30,38 @@ describe("collab limits", () => {
     expect(window.allow()).toBe(true);
   });
 });
+
+describe("per-client tables", () => {
+  it("keyed window admits N events per key per interval and keeps keys apart", async () => {
+    const { KeyedWindow } = await import("./limits.js");
+    let now = 0;
+    const window = new KeyedWindow(2, 1000, () => now);
+    expect([window.allow("a"), window.allow("a"), window.allow("a")]).toEqual([true, true, false]);
+    expect(window.allow("b")).toBe(true);
+    now = 1000;
+    expect(window.allow("a")).toBe(true);
+  });
+  it("connection table caps live sockets per key and releases idempotently", async () => {
+    const { ConnectionTable } = await import("./limits.js");
+    const table = new ConnectionTable(2);
+    const first = table.acquire("a"), second = table.acquire("a");
+    expect(first && second).toBeTruthy();
+    expect(table.acquire("a")).toBeNull();
+    expect(table.acquire("b")).not.toBeNull();
+    first!();
+    first!();
+    expect(table.count("a")).toBe(1);
+    expect(table.acquire("a")).not.toBeNull();
+    expect(table.acquire("a")).toBeNull();
+  });
+  it("reads the new per-client and size limits from the environment", () => {
+    expect(collabLimitsFromEnv({})).toMatchObject({
+      maxDocBytes: 32 * 1024 * 1024,
+      awarenessMaxBytes: 16 * 1024,
+      maxSocketsPerClient: 16,
+      joinTimeoutMs: 15_000,
+      projectsCreatedPerHourPerClient: 20,
+    });
+    expect(collabLimitsFromEnv({ COLLAB_MAX_DOC_BYTES: "1024", MAX_SOCKETS_PER_CLIENT: "2" })).toMatchObject({ maxDocBytes: 1024, maxSocketsPerClient: 2 });
+  });
+});
